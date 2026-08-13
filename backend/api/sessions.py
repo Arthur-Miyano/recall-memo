@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
-"""会话接口：驱动记忆训练模式完整闭环（JSON 交互）。"""
-from typing import Literal, Optional
+"""会话接口：驱动记忆训练 / 面试模拟 / 回忆三种模式的完整闭环（JSON 交互）。"""
+from datetime import datetime
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlmodel import Session as DBSession
 
 from agents import StateError, orchestrator
@@ -20,12 +21,19 @@ def get_db():
 
 
 class CreateSessionRequest(BaseModel):
-    mode: str = "memorize"  # 本阶段仅支持 memorize，其余模式预留
+    mode: str = "memorize"  # memorize（记忆训练）/ interview（面试模拟）/ review（回忆）
     stack: Optional[str] = None  # 技术栈筛选：python / agent / vue3 / mixed
-    count: Literal[3, 5, 7] = 3
+    count: int = Field(default=3, ge=1, le=10)  # 各模式题量上限在总控按模式校验
 
 
 class AnswerRequest(BaseModel):
+    answer: str
+    # 调用方标记的开始作答时间（面试模式时间压力：2 分钟内必须开始作答）
+    started_at: Optional[datetime] = None
+
+
+class RetryRequest(BaseModel):
+    question_id: int
     answer: str
 
 
@@ -35,7 +43,7 @@ def _handle_state_error(exc: StateError) -> HTTPException:
 
 @router.post("")
 async def create_session(req: CreateSessionRequest, db: DBSession = Depends(get_db)):
-    """开始会话：抽题，进入 MEMORIZE_SHOW，返回题目列表（含标准答案，供记忆）。"""
+    """开始会话：按模式抽题。记忆/回忆模式返回题目列表（含答案）；面试模式直接返回第一题。"""
     try:
         return await orchestrator.run(
             "create_session", db=db, mode=req.mode, tech_stack=req.stack, count=req.count
@@ -46,7 +54,7 @@ async def create_session(req: CreateSessionRequest, db: DBSession = Depends(get_
 
 @router.post("/{session_id}/start_quiz")
 async def start_quiz(session_id: int, db: DBSession = Depends(get_db)):
-    """开始考核：打乱顺序，进入 MEMORIZE_QUIZ，返回第一题变体题干（不含答案）。"""
+    """开始考核（记忆/回忆模式）：打乱顺序，返回第一题变体题干（不含答案）。"""
     try:
         return await orchestrator.run("start_quiz", db=db, session_id=session_id)
     except StateError as exc:
@@ -55,7 +63,7 @@ async def start_quiz(session_id: int, db: DBSession = Depends(get_db)):
 
 @router.get("/{session_id}/current")
 async def current_question(session_id: int, db: DBSession = Depends(get_db)):
-    """当前题：变体题干 + 关键词提示，不含答案。"""
+    """当前题：变体题干（考核模式含关键词提示；面试模式含追问标识与出题时间），不含答案。"""
     try:
         return await orchestrator.run("current", db=db, session_id=session_id)
     except StateError as exc:
@@ -64,9 +72,41 @@ async def current_question(session_id: int, db: DBSession = Depends(get_db)):
 
 @router.post("/{session_id}/answer")
 async def submit_answer(session_id: int, req: AnswerRequest, db: DBSession = Depends(get_db)):
-    """提交回答：评分+写库并行，返回结构化评分与标准答案对照，推进到下一题。"""
+    """提交回答：考核模式即时返回评分；面试模式只回执"已记录"并推进下一题。"""
     try:
-        return await orchestrator.run("answer", db=db, session_id=session_id, answer=req.answer)
+        return await orchestrator.run(
+            "answer", db=db, session_id=session_id, answer=req.answer,
+            started_at=req.started_at.isoformat() if req.started_at else None,
+        )
+    except StateError as exc:
+        raise _handle_state_error(exc) from exc
+
+
+@router.post("/{session_id}/skip")
+async def skip_question(session_id: int, db: DBSession = Depends(get_db)):
+    """面试跳过：标记为失败（总分 0），不消耗补答机会、不给补答，推进下一题。"""
+    try:
+        return await orchestrator.run("skip", db=db, session_id=session_id)
+    except StateError as exc:
+        raise _handle_state_error(exc) from exc
+
+
+@router.get("/{session_id}/review")
+async def review_report(session_id: int, db: DBSession = Depends(get_db)):
+    """终局复盘报告：逐题对照、各维度得分、薄弱点分析、学习建议、需补答列表。"""
+    try:
+        return await orchestrator.run("review", db=db, session_id=session_id)
+    except StateError as exc:
+        raise _handle_state_error(exc) from exc
+
+
+@router.post("/{session_id}/retry")
+async def retry_question(session_id: int, req: RetryRequest, db: DBSession = Depends(get_db)):
+    """补答：仅允许复盘报告"需补答"列表中的题，每题仅 1 次；原记录保留，补答写新记录。"""
+    try:
+        return await orchestrator.run(
+            "retry", db=db, session_id=session_id, question_id=req.question_id, answer=req.answer
+        )
     except StateError as exc:
         raise _handle_state_error(exc) from exc
 

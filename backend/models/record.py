@@ -27,6 +27,11 @@ class Record(SQLModel, table=True):
     score_total: Optional[float] = Field(default=None, description="总分")
     is_reciting: Optional[bool] = Field(default=None, description="是否判定为背诵（反背诵检测）")
     need_followup: bool = Field(default=False, description="是否需要补答/追问")
+    # 面试模式：跳过的题记为失败（总分 0），但不给补答机会
+    skipped: bool = Field(default=False, description="是否被跳过（判负，不可补答）")
+    # 补答记录：原记录保留不覆盖，补答写为新记录并标记
+    is_retry: bool = Field(default=False, description="是否补答记录")
+    retry_of: Optional[int] = Field(default=None, description="补答对应的原记录 id")
     created_at: datetime = Field(default_factory=_utcnow, description="答题时间戳")
 
 

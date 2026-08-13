@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api import health, llm, sessions
+from api import health, llm, sessions, stats
 from database import init_db
 
 
@@ -30,3 +30,4 @@ app.add_middleware(
 app.include_router(health.router, prefix="/api")
 app.include_router(llm.router, prefix="/api")
 app.include_router(sessions.router, prefix="/api")
+app.include_router(stats.router, prefix="/api")
