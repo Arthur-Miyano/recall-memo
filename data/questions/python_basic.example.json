@@ -1,0 +1,18 @@
+[
+  {
+    "stem": "什么是 Python 的 GIL？它对多线程编程有什么影响？",
+    "answer": "GIL（全局解释器锁）是 CPython 解释器中的一把互斥锁，同一时刻只允许一个线程执行 Python 字节码。因此 CPU 密集型任务用多线程无法利用多核，应改用多进程；而 I/O 密集型任务中线程会在等待 I/O 时释放 GIL，多线程仍然有效。",
+    "tech_stack": "python",
+    "difficulty": "basic",
+    "keywords": ["GIL", "全局解释器锁", "CPython", "多线程", "多进程", "CPU 密集", "I/O 密集"],
+    "tags": ["并发", "解释器"]
+  },
+  {
+    "stem": "Python 中列表和元组有什么区别？",
+    "answer": "列表（list）可变，支持增删改，适合动态数据；元组（tuple）不可变，可作为字典的 key，占用内存更小、迭代更快，适合表示固定结构的数据。",
+    "tech_stack": "python",
+    "difficulty": "basic",
+    "keywords": ["可变", "不可变", "字典 key", "内存"],
+    "tags": ["数据结构", "基础"]
+  }
+]
