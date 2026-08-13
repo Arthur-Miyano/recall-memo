@@ -1,0 +1,199 @@
+[
+  {
+    "stem": "请解释 Python 的内存管理机制，包括引用计数、分代垃圾回收和 GIL 之间的关系，并说明它们如何协同工作。",
+    "answer": "Python 的内存管理由三个层次协同：内存分配器（pymalloc）、引用计数和分代垃圾回收器。引用计数是最基础的机制，每个对象在 C 层有 ob_refcnt 字段，当计数归零时立即销毁对象。但引用计数无法处理循环引用，因此引入分代垃圾回收器（Generational GC），它维护三个代（0、1、2），新对象放入第 0 代，超过阈值时触发扫描，打破循环引用，存活对象提升到下一代，代越老回收频率越低，基于“分代假设”提升效率。GIL 是 CPython 的全局解释器锁，确保同一时刻只有一个线程执行字节码，其存在是因为引用计数操作不是线程安全的，需要锁保护。GIL 使得 CPU 密集型多线程无法并行，但 I/O 密集型任务中线程等待 I/O 时会释放 GIL，仍可并发。三者协同：引用计数快速处理无环对象，分代 GC 处理循环引用，GIL 保证内存操作安全。理解这些机制有助于优化 Python 程序性能，例如使用多进程绕过 GIL，或用 weakref 打破循环引用。",
+    "tech_stack": "python",
+    "difficulty": "medium",
+    "keywords": [
+      "引用计数",
+      "分代垃圾回收",
+      "GIL",
+      "循环引用",
+      "内存管理"
+    ],
+    "tags": [
+      "Python",
+      "内存管理",
+      "垃圾回收"
+    ],
+    "source_section": "Python 内存管理与垃圾回收"
+  },
+  {
+    "stem": "请解释 Python 中赋值、浅拷贝和深拷贝的区别，并说明它们各自对可变对象的影响。",
+    "answer": "在 Python 中，赋值（如 a = b）不会创建新对象，而是让两个变量指向同一内存地址，因此修改可变对象会互相影响。浅拷贝（如 copy.copy、切片、list()）创建新对象，但只复制原对象中元素的引用，对于不可变元素（数字、字符串、元组）安全，但对于可变子对象（如嵌套列表、字典），新对象和原对象共享这些子对象，修改子对象会影响原对象。深拷贝（copy.deepcopy）递归复制所有层次，创建完全独立的新对象，包括所有可变子对象，因此修改深拷贝不会影响原对象。深拷贝通过 memo 字典处理循环引用，避免无限递归。理解三者的关键在于认识到 Python 变量存储的是对象的引用，而非对象本身。is 比较身份（内存地址），== 比较值。",
+    "tech_stack": "python",
+    "difficulty": "medium",
+    "keywords": [
+      "赋值",
+      "浅拷贝",
+      "深拷贝",
+      "可变对象",
+      "引用",
+      "copy模块"
+    ],
+    "tags": [
+      "Python基础",
+      "对象模型",
+      "面试陷阱"
+    ],
+    "source_section": "深浅拷贝 vs 赋值"
+  },
+  {
+    "stem": "请解释 Python 装饰器的原理，并说明函数装饰器、带参数装饰器和类装饰器的实现方式及适用场景。",
+    "answer": "装饰器本质上是高阶函数，接收一个函数并返回新函数，语法 @decorator 等价于 func = decorator(func)。函数装饰器通过定义内层 wrapper 函数，在调用原函数前后添加逻辑，并使用 functools.wraps 保留原函数元信息。带参数装饰器需要三层嵌套：外层接收参数，中层接收函数，内层为 wrapper，执行顺序为 func = decorator(arg)(func)。类装饰器通过实现 __init__ 和 __call__ 方法，使实例可调用，适合需要保存状态的场景，如统计调用次数。多装饰器叠加时，执行顺序从下到上，等价于 func = decorator_a(decorator_b(func))。装饰器广泛应用于日志、计时、权限校验、缓存等，遵循开放封闭原则，不修改原代码即可扩展功能。",
+    "tech_stack": "python",
+    "difficulty": "medium",
+    "keywords": [
+      "装饰器",
+      "高阶函数",
+      "functools.wraps",
+      "类装饰器",
+      "带参数装饰器",
+      "执行顺序"
+    ],
+    "tags": [
+      "Python",
+      "函数式编程",
+      "设计模式"
+    ],
+    "source_section": "装饰器原理与实现"
+  },
+  {
+    "stem": "请解释 Python 中迭代器与生成器的区别，并说明生成器的惰性求值特性及其在实际开发中的应用场景。",
+    "answer": "迭代器是实现了 `__iter__()` 和 `__next__()` 协议的对象，通过 `__next__()` 逐个返回元素，耗尽后抛出 `StopIteration`，且不可重置。生成器是一种特殊的迭代器，通过 `yield` 关键字自动创建，函数调用时返回生成器对象，执行到 `yield` 暂停并保存状态，下次从暂停处继续。生成器天然支持惰性求值，即按需生成数据，不一次性加载全部到内存，因此内存占用极低。实际应用中，生成器常用于处理大文件（逐行读取）、无限序列（如斐波那契）、数据管道（多个生成器串联）以及协程（通过 `send()` 双向通信）。此外，生成器表达式（圆括号）比列表推导式更节省内存。`yield from` 可委托子生成器，简化复杂生成器的组合。",
+    "tech_stack": "python",
+    "difficulty": "medium",
+    "keywords": [
+      "迭代器",
+      "生成器",
+      "惰性求值",
+      "yield",
+      "内存优化"
+    ],
+    "tags": [
+      "Python",
+      "生成器",
+      "迭代器"
+    ],
+    "source_section": "生成器与迭代器"
+  },
+  {
+    "stem": "请解释 Python 中元类（Metaclass）的概念，并说明类的创建过程以及自定义元类的典型应用场景。",
+    "answer": "元类是“类的类”，它控制类的创建过程。在 Python 中，类本身也是对象，默认情况下所有类的元类都是 `type`。`type` 具有双重身份：作为函数返回对象的类型，作为元类在类定义时被调用。类的创建过程分为三个阶段：首先执行类体代码收集属性和方法形成命名空间；然后将类名、基类元组和命名空间传给元类（默认 `type`），由元类的 `__new__` 创建类对象，`__init__` 初始化类；最后调用 `__init_subclass__` 完成初始化。自定义元类需继承 `type` 并重写 `__new__` 或 `__init__`，例如在 `__new__` 中修改命名空间（如将方法名转为大写）或自动注册子类。典型应用包括 ORM 框架的字段映射、插件注册、属性验证和单例模式。理解元类有助于深入掌握 Python 的对象模型和高级编程技巧。",
+    "tech_stack": "python",
+    "difficulty": "medium",
+    "keywords": [
+      "元类",
+      "type",
+      "__new__",
+      "类创建",
+      "注册",
+      "单例"
+    ],
+    "tags": [
+      "Python",
+      "面向对象",
+      "元编程"
+    ],
+    "source_section": "元类（Metaclass）与类创建过程"
+  },
+  {
+    "stem": "请解释 Python 中魔术方法（Magic Methods）的概念，并举例说明 __new__、__init__、__call__、__getattr__ 和 __slots__ 的作用及使用场景。",
+    "answer": "魔术方法是 Python 中以双下划线开头和结尾的特殊方法，由解释器在特定场景自动触发，用于实现对象创建、初始化、调用、属性访问等行为。__new__ 是真正的构造函数，负责创建实例，在 __init__ 之前调用，常用于单例模式或限制实例数量；__init__ 在实例创建后初始化状态，大多数类只需重写它。__call__ 使实例可像函数一样调用，常用于闭包替代或策略模式。__getattr__ 在访问不存在的属性时触发，用于动态属性或懒加载；__getattribute__ 在访问任何属性时触发，需谨慎避免递归。__slots__ 是类属性，声明允许的实例属性名，替代 __dict__ 存储，节省内存并加快访问速度，但禁止动态添加新属性。这些方法共同提升了代码的 Pythonic 风格和灵活性。",
+    "tech_stack": "python",
+    "difficulty": "medium",
+    "keywords": [
+      "魔术方法",
+      "__new__",
+      "__init__",
+      "__call__",
+      "__getattr__",
+      "__slots__"
+    ],
+    "tags": [
+      "Python",
+      "面向对象",
+      "特殊方法"
+    ],
+    "source_section": "魔术方法（Magic Methods / Dunder Methods）"
+  },
+  {
+    "stem": "请解释 Python 中上下文管理器（with 语句）的工作原理，并说明如何自定义一个上下文管理器。",
+    "answer": "上下文管理器通过 with 语句确保资源在使用后被正确释放，即使发生异常也会执行清理。其核心是上下文管理协议，包含 __enter__ 和 __exit__ 两个方法。执行流程：先调用 __enter__，返回值赋给 as 后的变量；执行代码块；无论是否异常，都会调用 __exit__，并传入异常类型、值和回溯（无异常时均为 None）。若 __exit__ 返回 True，则抑制异常，否则异常继续传播。自定义方式有两种：一是定义类并实现 __enter__ 和 __exit__；二是使用 contextlib 模块的 @contextmanager 装饰器，将生成器函数转换为上下文管理器，yield 前的代码相当于 __enter__，yield 后的代码（通常放在 finally 中）相当于 __exit__。此外，contextlib 还提供 closing 和 suppress 等工具。",
+    "tech_stack": "python",
+    "difficulty": "basic",
+    "keywords": [
+      "上下文管理器",
+      "__enter__",
+      "__exit__",
+      "with语句",
+      "contextlib",
+      "资源管理"
+    ],
+    "tags": [
+      "Python基础",
+      "资源管理",
+      "异常处理"
+    ],
+    "source_section": "上下文管理器（with 语句）"
+  },
+  {
+    "stem": "请解释 Python 多继承中的 MRO（方法解析顺序）是什么，以及 C3 线性化算法如何保证其正确性？",
+    "answer": "MRO 是 Python 中确定多继承时方法查找顺序的规则。Python 2.3 起采用 C3 线性化算法，确保子类优先于父类、单调性和局部优先性。C3 算法通过合并父类的 MRO 列表和父类列表来生成子类的 MRO，公式为 L(C(B1,B2,...)) = C + merge(L(B1), L(B2), ..., B1, B2, ...)。例如，类 D(B, C) 的 MRO 为 D -> B -> C -> A -> object，这保证了菱形继承中基类只初始化一次。`super()` 函数按照 MRO 调用下一个类的方法，而非直接调用父类，从而支持协作式多重继承。若硬编码调用父类（如 Base.__init__），会破坏 MRO，导致重复初始化等问题。",
+    "tech_stack": "python",
+    "difficulty": "medium",
+    "keywords": [
+      "MRO",
+      "C3线性化",
+      "多继承",
+      "super()",
+      "菱形继承"
+    ],
+    "tags": [
+      "Python",
+      "面向对象",
+      "继承"
+    ],
+    "source_section": "多继承与 MRO（方法解析顺序）"
+  },
+  {
+    "stem": "请解释 Python 的 LEGB 作用域规则，并说明闭包的形成条件及其与 nonlocal 关键字的关系。",
+    "answer": "LEGB 是 Python 查找变量的顺序：Local（局部）→ Enclosing（嵌套）→ Global（全局）→ Built-in（内置）。查找时按此顺序，若均未找到则抛出 NameError。闭包的形成需三个条件：嵌套函数、内层函数引用外层变量、外层函数返回内层函数。闭包能记住外层变量，实现数据隐藏和状态保持。nonlocal 关键字用于在内层函数中声明变量为外层（非全局）变量，从而允许修改闭包捕获的变量。若不加 nonlocal，内层函数对同名变量赋值会创建新的局部变量，导致无法修改外层变量。例如计数器闭包中，使用 nonlocal count 才能递增外层 count。而 global 关键字则用于修改全局变量。理解 LEGB 和闭包有助于避免作用域陷阱，如循环中创建闭包时共享循环变量的问题。",
+    "tech_stack": "python",
+    "difficulty": "medium",
+    "keywords": [
+      "LEGB",
+      "闭包",
+      "nonlocal",
+      "作用域",
+      "嵌套函数"
+    ],
+    "tags": [
+      "Python",
+      "作用域",
+      "闭包"
+    ],
+    "source_section": "闭包与作用域（LEGB 规则）"
+  },
+  {
+    "stem": "请介绍 Python 标准库中 collections、itertools、functools 三个模块的主要用途，并各举一个典型使用场景。",
+    "answer": "这三个模块是 Python 标准库中非常实用的工具模块。collections 提供了扩展的容器数据类型，如 namedtuple 用于创建带字段名的元组，提高代码可读性；deque 是双端队列，两端操作均为 O(1)，适合实现队列或栈；Counter 用于计数可哈希对象，可快速统计词频；defaultdict 在访问不存在的键时自动生成默认值，简化分组逻辑。itertools 提供高效迭代器工具，所有函数惰性求值，适合处理大数据流，如 count 生成无限序列，permutations 和 combinations 生成排列组合，groupby 对连续相同元素分组。functools 提供高阶函数，lru_cache 可缓存函数结果，显著提升递归性能；partial 固定函数参数，生成偏函数；reduce 对序列累积计算；singledispatch 实现泛型函数。典型场景：用 Counter 统计日志中 IP 出现次数，用 itertools.permutations 生成密码字典，用 lru_cache 加速斐波那契数列计算。",
+    "tech_stack": "python",
+    "difficulty": "medium",
+    "keywords": [
+      "collections",
+      "itertools",
+      "functools",
+      "namedtuple",
+      "lru_cache",
+      "惰性求值"
+    ],
+    "tags": [
+      "Python标准库",
+      "内置模块",
+      "容器类型",
+      "高阶函数"
+    ],
+    "source_section": "常用内置模块"
+  }
+]
