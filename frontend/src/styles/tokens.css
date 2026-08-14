@@ -1,0 +1,24 @@
+/* ============ 纸墨设计令牌 ============
+   来源：prototype/index.html :root（像素级迁移，勿改色值） */
+:root {
+  /* 纸与墨 */
+  --paper:      #EDEFEA;   /* 墨水屏底：微青灰的纸白 */
+  --paper-hi:   #F6F7F3;   /* 高光纸面 */
+  --ink:        #191919;   /* 墨 */
+  --ink-70:     rgba(25,25,25,.7);
+  --ink-45:     rgba(25,25,25,.45);
+  --ink-25:     rgba(25,25,25,.25);
+  --ink-12:     rgba(25,25,25,.12);
+  --seal:       #C0392B;   /* 印章红：唯一点缀色 */
+  /* 字体 */
+  --serif: "Noto Serif SC", "Songti SC", "STSong", "SimSun", serif;
+  --mono:  "JetBrains Mono", "Sarasa Mono SC", ui-monospace, "Courier New", monospace;
+  --sans:  -apple-system, "PingFang SC", "Microsoft YaHei", "Source Han Sans SC", sans-serif;
+  /* 图纸网格 */
+  --grid-size: 28px;
+  --grid-color: rgba(25,25,25,.055);
+  /* 动效 */
+  --ease-out: cubic-bezier(.22,1,.36,1);   /* ease-out-expo 近似 */
+  --ease-snap: cubic-bezier(.16,1,.3,1);
+  --z-nav: 40; --z-stamp: 30; --z-paper: 10;
+}
