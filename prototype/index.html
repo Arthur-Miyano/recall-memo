@@ -1,0 +1,1218 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>记忆助手 Recall · 风格原型</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;600;900&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* ============ 纸墨设计令牌 ============ */
+:root {
+  /* 纸与墨 */
+  --paper:      #EDEFEA;   /* 墨水屏底：微青灰的纸白 */
+  --paper-hi:   #F6F7F3;   /* 高光纸面 */
+  --ink:        #191919;   /* 墨 */
+  --ink-70:     rgba(25,25,25,.7);
+  --ink-45:     rgba(25,25,25,.45);
+  --ink-25:     rgba(25,25,25,.25);
+  --ink-12:     rgba(25,25,25,.12);
+  --seal:       #C0392B;   /* 印章红：唯一点缀色 */
+  /* 字体 */
+  --serif: "Noto Serif SC", "Songti SC", "STSong", "SimSun", serif;
+  --mono:  "JetBrains Mono", "Sarasa Mono SC", ui-monospace, "Courier New", monospace;
+  --sans:  -apple-system, "PingFang SC", "Microsoft YaHei", "Source Han Sans SC", sans-serif;
+  /* 图纸网格 */
+  --grid-size: 28px;
+  --grid-color: rgba(25,25,25,.055);
+  /* 动效 */
+  --ease-out: cubic-bezier(.22,1,.36,1);   /* ease-out-expo 近似 */
+  --ease-snap: cubic-bezier(.16,1,.3,1);
+  --z-nav: 40; --z-stamp: 30; --z-paper: 10;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+html { -webkit-font-smoothing: antialiased; }
+body {
+  font-family: var(--sans);
+  background-color: var(--paper);
+  color: var(--ink);
+  /* 图纸坐标格 + 纸面噪点 */
+  background-image:
+    linear-gradient(var(--grid-color) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-color) 1px, transparent 1px);
+  background-size: var(--grid-size) var(--grid-size);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+/* 纸面噪点（dither 颗粒感） */
+body::before {
+  content:""; position:fixed; inset:0; pointer-events:none; z-index:1;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 .05 0'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)'/%3E%3C/svg%3E");
+  opacity:.5; mix-blend-mode:multiply;
+}
+::selection { background: var(--ink); color: var(--paper); }
+
+/* ============ 通用件 ============ */
+.mono { font-family: var(--mono); }
+.tag {
+  font-family: var(--mono); font-size:11px; letter-spacing:.08em;
+  border:1px solid var(--ink); padding:2px 8px; display:inline-block;
+  background: var(--paper-hi);
+}
+.tag--seal { border-color: var(--seal); color: var(--seal); }
+.rule { border:none; border-top:1px solid var(--ink); }
+.btn {
+  font-family: var(--mono); font-size:13px; letter-spacing:.06em;
+  padding:10px 26px; border:1px solid var(--ink); border-radius:999px;
+  background: var(--ink); color: var(--paper); cursor:pointer;
+  transition: transform .18s var(--ease-out), background .18s, color .18s;
+}
+.btn:hover { transform: translateY(-2px); }
+.btn:active { transform: translateY(0); }
+.btn--ghost { background: transparent; color: var(--ink); }
+.btn--ghost:hover { background: var(--ink-12); }
+/* 像素进度条（点阵抖动风） */
+.pixbar { height:12px; display:flex; gap:2px; }
+.pixbar i { width:8px; height:12px; background: var(--ink); }
+.pixbar i.off { background: var(--ink-12); }
+/* 印章 */
+.stamp {
+  font-family: var(--serif); font-weight:900; color: var(--seal);
+  border:3px double var(--seal); padding:6px 14px; display:inline-block;
+  transform: rotate(-8deg); letter-spacing:.15em; font-size:18px;
+  opacity:.92; user-select:none;
+}
+
+/* ============ 原型导航 ============ */
+.proto-nav {
+  position:fixed; top:0; left:0; right:0; z-index:var(--z-nav);
+  display:flex; align-items:center; gap:18px;
+  padding:10px 24px; background: var(--paper);
+  border-bottom:1px solid var(--ink);
+  font-family: var(--mono); font-size:12px;
+}
+.proto-nav b { letter-spacing:.1em; }
+.proto-nav .spacer { flex:1; }
+.proto-nav button {
+  font-family: var(--mono); font-size:15px; letter-spacing:.05em;
+  background:none; border:none; border-bottom:2px solid transparent;
+  padding:10px 6px; cursor:pointer; color: var(--ink-45);
+  transition: color .15s, border-color .15s;
+}
+.proto-nav button.on { color: var(--ink); border-bottom-color: var(--seal); }
+.proto-nav button:hover { color: var(--ink); }
+
+/* ============ 屏幕容器 ============ */
+.screen { display:none; padding:88px 6vw 64px; position:relative; z-index:2; }
+.screen.active { display:block; animation: screenIn .5s var(--ease-out); }
+@keyframes screenIn {
+  from { opacity:0; transform: translateY(14px); }
+  to   { opacity:1; transform: none; }
+}
+
+/* ============ 屏幕一：首页 · 档案抽屉 ============ */
+/* 整页 flex：标题靠上、抽屉居视觉中轴、页尾沉底 */
+#s-home.active { display:flex; flex-direction:column; min-height:100vh; }
+#s-home .drawers { margin-block:auto; width:100%; }
+#s-home .home-foot { margin-top:auto; width:100%; }
+.home-head { max-width:1100px; margin:0 auto 48px; width:100%; }
+.home-head .meta-row {
+  display:flex; justify-content:space-between; align-items:baseline;
+  font-family: var(--mono); font-size:12px; color: var(--ink-70);
+  letter-spacing:.08em; margin-bottom:28px;
+}
+.home-title {
+  font-family: var(--serif); font-weight:900;
+  font-size: clamp(40px, 6vw, 76px); line-height:1.12;
+  letter-spacing:.01em; text-wrap: balance;
+}
+.home-title em { font-style: normal; border-bottom:4px solid var(--seal); }
+.home-sub {
+  margin-top:16px; font-family: var(--mono); font-size:13px;
+  color: var(--ink-70); letter-spacing:.05em;
+}
+/* 抽屉组 */
+.drawers { max-width:1100px; margin:0 auto; }
+.drawer {
+  position:relative; border:1px solid var(--ink); background: var(--paper-hi);
+  margin-top:-1px; cursor:pointer; overflow:hidden;
+  transition: background .25s;
+}
+/* 文件夹顶部凸舌 */
+.drawer::before {
+  content:""; position:absolute; top:-1px; left:36px; width:180px; height:10px;
+  background: inherit; border:1px solid var(--ink); border-bottom:none;
+  clip-path: polygon(0 100%, 0 0, calc(100% - 12px) 0, 100% 100%);
+  transform: translateY(-9px);
+  transition: transform .3s var(--ease-snap);
+}
+.drawer:first-child::before { transform: translateY(-9px) ; }
+.drawer-row {
+  display:flex; align-items:baseline; gap:24px;
+  padding:26px 32px;
+}
+.drawer-idx {
+  font-family: var(--mono); font-size:12px; color: var(--ink-45);
+  min-width:44px; letter-spacing:.1em;
+}
+.drawer-name {
+  font-family: var(--serif); font-weight:600; font-size:30px; flex:1;
+}
+.drawer-hint { font-family: var(--mono); font-size:12px; color: var(--ink-45); letter-spacing:.08em; }
+/* 抽屉展开内容 */
+.drawer-body {
+  display:grid; grid-template-rows: 0fr;
+  transition: grid-template-rows .45s var(--ease-snap);
+}
+.drawer-body > div { overflow:hidden; }
+.drawer:hover, .drawer.open { background: #fff; }
+.drawer:hover::before, .drawer.open::before { transform: translateY(0); }
+/* 纯点击手风琴：只有 .open 展开，同时仅一个（JS 控制），默认展开记忆训练 */
+.drawer.open .drawer-body { grid-template-rows: 1fr; }
+.drawer-stats {
+  display:flex; gap:0; border-top:1px solid var(--ink-12);
+  margin:0 32px; padding:20px 0 26px;
+}
+.stat { flex:1; padding:0 24px; border-left:1px solid var(--ink-12); }
+.stat:first-child { border-left:none; padding-left:0; }
+.stat .k { font-family: var(--mono); font-size:11px; letter-spacing:.12em; color: var(--ink-45); margin-bottom:8px; }
+.stat .v { font-family: var(--mono); font-size:26px; font-weight:500; font-variant-numeric: tabular-nums; }
+.stat .v small { font-size:12px; color: var(--ink-45); }
+.drawer-cta {
+  margin:0 32px 26px; display:flex; gap:12px; align-items:center;
+}
+.home-foot {
+  max-width:1100px; margin:56px auto 0; display:flex; justify-content:space-between;
+  font-family: var(--mono); font-size:11px; color: var(--ink-45); letter-spacing:.1em;
+  border-top:1px solid var(--ink); padding-top:14px;
+}
+</style>
+<style>
+/* 可选项胶囊（技术栈/题量选择） */
+.opt-group { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.opt-group .opt-label { font-family: var(--mono); font-size:11px; letter-spacing:.12em; color: var(--ink-45); margin-right:6px; }
+.opt {
+  font-family: var(--mono); font-size:12px; letter-spacing:.05em;
+  border:1px solid var(--ink-45); border-radius:999px; background:transparent;
+  color: var(--ink-70); padding:5px 16px; cursor:pointer;
+  transition: background .15s, color .15s, border-color .15s;
+}
+.opt:hover { border-color: var(--ink); color: var(--ink); }
+.opt.on { background: var(--ink); border-color: var(--ink); color: var(--paper); }
+.opt--seal.on { background: var(--seal); border-color: var(--seal); }
+
+/* ============ 屏幕二：面试答题 ============ */
+.iv-wrap { max-width:860px; margin:0 auto; }
+.iv-topbar {
+  display:flex; align-items:center; gap:16px;
+  font-family: var(--mono); font-size:12px; letter-spacing:.1em;
+  color: var(--ink-70); margin-bottom:10px;
+}
+.iv-topbar .spacer { flex:1; }
+.iv-timer {
+  font-family: var(--mono); font-size:22px; font-weight:500;
+  font-variant-numeric: tabular-nums; letter-spacing:.04em;
+}
+.iv-timer.over { color: var(--seal); }
+/* 倒计时进度：细线，克制 */
+.iv-line { height:2px; background: var(--ink-12); position:relative; margin-bottom:56px; }
+.iv-line i {
+  position:absolute; inset:0 auto 0 0; background: var(--ink); width:62%;
+  transition: width 1s linear;
+}
+.iv-line.over i { background: var(--seal); }
+.iv-agent {
+  font-family: var(--mono); font-size:11px; letter-spacing:.12em;
+  color: var(--ink-45); margin-bottom:20px; display:flex; align-items:center; gap:8px;
+}
+.iv-agent::before {
+  content:""; width:7px; height:7px; background: var(--ink); display:inline-block;
+  animation: blink 1.6s steps(2) infinite;
+}
+@keyframes blink { 50% { opacity:.15; } }
+.iv-question {
+  font-family: var(--serif); font-weight:600;
+  font-size: clamp(24px, 3vw, 34px); line-height:1.5;
+  margin-bottom:14px; text-wrap: pretty;
+}
+.iv-follow { margin-bottom:40px; }
+.iv-follow .tag { background: transparent; }
+.iv-input {
+  width:100%; min-height:200px; resize:vertical;
+  border:1px solid var(--ink); background: var(--paper-hi);
+  padding:22px 24px; font-family: var(--sans); font-size:16px; line-height:1.9;
+  color: var(--ink); outline:none;
+  /* 稿纸横线 */
+  background-image: repeating-linear-gradient(transparent 0 calc(1.9em - 1px), var(--ink-12) calc(1.9em - 1px) 1.9em);
+  transition: box-shadow .2s;
+}
+.iv-input:focus { box-shadow: 4px 4px 0 var(--ink); }
+.iv-input::placeholder { color: var(--ink-25); }
+.iv-actions { display:flex; gap:14px; margin-top:22px; align-items:center; }
+.iv-note { font-family: var(--mono); font-size:11px; color: var(--ink-45); letter-spacing:.06em; }
+/* 已记录印章态 */
+.iv-recorded {
+  display:none; border:1px solid var(--ink); background: var(--paper-hi);
+  padding:48px 32px; text-align:center; position:relative;
+}
+.iv-recorded.show { display:block; animation: screenIn .4s var(--ease-out); }
+.iv-recorded .stamp { font-size:24px; margin-bottom:20px; animation: stampIn .35s var(--ease-snap) both .1s; }
+@keyframes stampIn {
+  from { transform: rotate(-8deg) scale(1.7); opacity:0; }
+  to   { transform: rotate(-8deg) scale(1); opacity:.92; }
+}
+.iv-recorded p { font-family: var(--mono); font-size:12px; color: var(--ink-45); letter-spacing:.08em; margin-bottom:24px; }
+
+/* ============ 屏幕三：复盘报告 ============ */
+.rv-head { max-width:1200px; margin:0 auto 40px; display:flex; align-items:flex-end; gap:24px; flex-wrap:wrap; }
+.rv-title { font-family: var(--serif); font-weight:900; font-size: clamp(34px,4.5vw,56px); line-height:1.15; }
+.rv-head .meta { font-family: var(--mono); font-size:12px; color: var(--ink-70); letter-spacing:.08em; line-height:2; }
+.rv-head .spacer { flex:1; }
+/* 纸张桌面 */
+.rv-desk { max-width:1200px; margin:0 auto; position:relative; min-height:200px; }
+.paper {
+  background: var(--paper-hi); border:1px solid var(--ink);
+  box-shadow: 5px 6px 0 rgba(25,25,25,.16);
+  padding:26px 28px; margin-bottom:28px; position:relative;
+}
+.paper.dragging { box-shadow: 9px 12px 0 rgba(25,25,25,.2); z-index: var(--z-stamp); cursor:grabbing; }
+.paper .paper-head {
+  display:flex; align-items:baseline; gap:14px; margin-bottom:16px;
+  border-bottom:1px solid var(--ink); padding-bottom:12px; cursor:grab;
+}
+.paper .no { font-family: var(--mono); font-size:12px; color: var(--ink-45); letter-spacing:.1em; }
+.paper h3 { font-family: var(--serif); font-weight:600; font-size:21px; flex:1; }
+.paper .score { font-family: var(--mono); font-size:22px; font-weight:700; font-variant-numeric:tabular-nums; }
+.paper .score small { font-size:11px; color:var(--ink-45); font-weight:400; }
+/* 纸张掉落入场 */
+.screen.active .paper { animation: drop .7s var(--ease-snap) both; }
+.screen.active .paper:nth-child(2) { animation-delay:.12s; transform: rotate(.6deg); }
+.screen.active .paper:nth-child(3) { animation-delay:.24s; transform: rotate(-.4deg); }
+.screen.active .paper:nth-child(4) { animation-delay:.36s; }
+@keyframes drop {
+  from { opacity:0; transform: translateY(-46px) rotate(2.5deg); }
+  60%  { opacity:1; }
+  to   { opacity:1; transform: translateY(0) rotate(0); }
+}
+/* 对照栏 */
+.compare { display:grid; grid-template-columns: 1fr 1fr; gap:0; border:1px solid var(--ink-25); }
+.compare > div { padding:16px 18px; font-size:14px; line-height:1.85; }
+.compare > div:first-child { border-right:1px dashed var(--ink-25); }
+.compare .lbl {
+  font-family: var(--mono); font-size:10px; letter-spacing:.14em;
+  color: var(--ink-45); display:block; margin-bottom:8px;
+}
+.dims { display:flex; gap:26px; margin:16px 0; flex-wrap:wrap; }
+.dim { font-family: var(--mono); font-size:11px; letter-spacing:.06em; }
+.dim b { display:block; font-size:18px; margin-top:4px; font-variant-numeric:tabular-nums; }
+.dim .pixbar { margin-top:6px; }
+.miss { font-size:13px; line-height:2; }
+.miss li { list-style:none; }
+.miss li::before { content:"×"; font-family: var(--mono); color: var(--seal); margin-right:8px; }
+.paper .stamp { position:absolute; top:64px; right:22px; font-size:15px; }
+/* 薄弱点分析 */
+.weak-list { columns:2; column-gap:40px; font-size:14px; line-height:2; }
+.weak-list li { list-style:none; break-inside:avoid; margin-bottom:6px; }
+.weak-list li::before { content:"—"; font-family: var(--mono); margin-right:8px; color: var(--ink-45); }
+.retry-box { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+.retry-box .tag { background: transparent; }
+
+/* ============ 屏幕四：仪表盘 ============ */
+.db-grid {
+  max-width:1200px; margin:0 auto;
+  display:grid; grid-template-columns: 7fr 5fr; gap:28px;
+}
+.db-panel { border:1px solid var(--ink); background: var(--paper-hi); padding:24px 26px; }
+.db-panel h2 {
+  font-family: var(--mono); font-size:12px; font-weight:500; letter-spacing:.14em;
+  color: var(--ink-70); margin-bottom:20px; display:flex; justify-content:space-between;
+}
+.db-panel h2 .n { color: var(--ink-25); }
+/* 日历热力格 */
+.cal { display:grid; grid-template-columns: repeat(14, 1fr); gap:4px; }
+.cal i {
+  aspect-ratio:1; background: var(--ink-12); display:block;
+  transition: transform .15s var(--ease-out);
+}
+.cal i:hover { transform: scale(1.25); outline:1px solid var(--ink); }
+.cal i.l1 { background: rgba(25,25,25,.3); }
+.cal i.l2 { background: rgba(25,25,25,.55); }
+.cal i.l3 { background: rgba(25,25,25,.8); }
+.cal i.l4 { background: var(--ink); }
+.cal-legend { display:flex; gap:6px; align-items:center; justify-content:flex-end; margin-top:12px;
+  font-family: var(--mono); font-size:10px; color: var(--ink-45); letter-spacing:.1em; }
+.cal-legend i { width:10px; height:10px; display:inline-block; }
+/* 折线图容器 */
+.chart-line { width:100%; height:auto; display:block; }
+/* 正确率柱 */
+.acc-row { display:flex; align-items:center; gap:14px; margin-bottom:16px; }
+.acc-row .name { font-family: var(--mono); font-size:12px; width:64px; letter-spacing:.06em; }
+.acc-row .pixbar { flex:1; }
+.acc-row .pct { font-family: var(--mono); font-size:14px; font-variant-numeric:tabular-nums; width:48px; text-align:right; }
+/* 知识图谱 */
+.kg { width:100%; height:auto; display:block; }
+.kg .lk { stroke: var(--ink-25); stroke-width:1; }
+.kg text { font-family: var(--mono); font-size:10px; fill: var(--ink-70); letter-spacing:.05em; }
+.kg .node-mastered { fill: var(--ink); }
+.kg .node-weak { fill: var(--paper-hi); stroke: var(--seal); stroke-width:1.5; stroke-dasharray:3 2; }
+.kg .node-todo { fill: var(--ink-12); }
+.kg .root { fill: var(--paper-hi); stroke: var(--ink); stroke-width:1.5; }
+.kg .root-label { font-size:12px; font-weight:700; fill: var(--ink); }
+.kg-legend { display:flex; gap:18px; margin-top:14px; font-family: var(--mono); font-size:10px; color: var(--ink-45); letter-spacing:.08em; }
+.kg-legend i { width:10px; height:10px; display:inline-block; margin-right:6px; vertical-align:-1px; }
+/* 今日建议 */
+.suggest { font-size:14px; line-height:2.1; }
+.suggest li { list-style:none; display:flex; gap:12px; align-items:baseline; }
+.suggest li .d { font-family: var(--mono); font-size:11px; color: var(--seal); }
+.suggest li .t { flex:1; }
+.suggest li .s { font-family: var(--mono); font-size:11px; color: var(--ink-45); }
+
+/* ============ 设置：模型与密钥 ============ */
+.set-row { display:flex; align-items:center; gap:14px; margin-bottom:16px; }
+.set-row .lbl { font-family: var(--mono); font-size:11px; letter-spacing:.1em; color: var(--ink-45); width:76px; flex-shrink:0; }
+.set-input {
+  flex:1; border:1px solid var(--ink-45); background:transparent;
+  font-family: var(--mono); font-size:13px; padding:8px 12px; color: var(--ink);
+  outline:none; transition: border-color .15s;
+}
+.set-input:focus { border-color: var(--ink); box-shadow: 3px 3px 0 var(--ink-12); }
+.set-input::placeholder { color: var(--ink-25); }
+.key-status { font-family: var(--mono); font-size:11px; color: var(--ink-45); letter-spacing:.05em; }
+.key-status b { color: var(--ink); font-weight:500; }
+.set-note { font-family: var(--mono); font-size:10px; color: var(--ink-45); letter-spacing:.06em; line-height:1.9; border-top:1px dashed var(--ink-25); padding-top:12px; margin-top:4px; }
+.set-note .seal { color: var(--seal); }
+
+/* ============ 减少动效 ============ */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration:.01ms !important; transition-duration:.01ms !important; }
+}
+@media (max-width: 900px) {
+  .db-grid { grid-template-columns: 1fr; }
+  .compare { grid-template-columns: 1fr; }
+  .compare > div:first-child { border-right:none; border-bottom:1px dashed var(--ink-25); }
+  .weak-list { columns:1; }
+  .drawer-stats { flex-wrap:wrap; gap:16px; }
+}
+/* ============ 水墨小螃蟹（智能助理入口） ============ */
+/* 常驻固定角落：任何页面都可点击；原地待机动效，不跟随光标 */
+.crab {
+  position:fixed; left:28px; top:76px; z-index:calc(var(--z-nav) + 1);
+  width:84px; height:84px; cursor:pointer; user-select:none;
+  transition: transform .2s var(--ease-out);
+}
+.crab:hover { transform: scale(1.08); }
+.crab svg { width:100%; height:100%; overflow:visible; }
+/* 待机舞动：身体轻摇 + 双钳交替挥舞 */
+.crab .crab-body { transform-origin:42px 46px; animation: crabSway 3.2s ease-in-out infinite; }
+.crab .claw-l { transform-origin:24px 34px; animation: clawWave 2.6s ease-in-out infinite; }
+.crab .claw-r { transform-origin:60px 34px; animation: clawWave 2.6s ease-in-out infinite reverse; }
+@keyframes crabSway { 0%,100% { transform: rotate(-2.5deg); } 50% { transform: rotate(2.5deg); } }
+@keyframes clawWave { 0%,100% { transform: rotate(0deg); } 50% { transform: rotate(-14deg); } }
+.crab-tip {
+  position:absolute; left:92px; top:26px; white-space:nowrap;
+  font-family: var(--mono); font-size:11px; letter-spacing:.08em; color: var(--ink-45);
+  opacity:0; transition: opacity .2s; pointer-events:none;
+}
+.crab:hover .crab-tip { opacity:1; }
+
+/* 对话面板 */
+.chat-panel {
+  position:fixed; left:28px; top:170px; z-index:calc(var(--z-nav) + 1);
+  width:380px; max-height:min(70vh, 620px); display:none; flex-direction:column;
+  background: var(--paper-hi); border:1px solid var(--ink);
+  box-shadow: 6px 8px 0 rgba(25,25,25,.16);
+}
+.chat-panel.show { display:flex; animation: screenIn .3s var(--ease-out); }
+.chat-head {
+  display:flex; align-items:baseline; gap:10px; padding:14px 18px;
+  border-bottom:1px solid var(--ink);
+}
+.chat-head b { font-family: var(--serif); font-size:17px; }
+.chat-head span { font-family: var(--mono); font-size:10px; letter-spacing:.12em; color: var(--ink-45); }
+.chat-head .x { margin-left:auto; cursor:pointer; font-family: var(--mono); color: var(--ink-45); }
+.chat-head .x:hover { color: var(--ink); }
+.chat-quick { display:flex; flex-wrap:wrap; gap:6px; padding:12px 18px; border-bottom:1px dashed var(--ink-25); }
+.chat-quick button {
+  font-family: var(--sans); font-size:12px; padding:4px 12px; cursor:pointer;
+  border:1px solid var(--ink-45); border-radius:999px; background:transparent; color: var(--ink-70);
+  transition: all .15s;
+}
+.chat-quick button:hover { border-color: var(--ink); color: var(--ink); }
+.chat-log { flex:1; overflow-y:auto; padding:14px 18px; font-size:13.5px; line-height:1.9; }
+.chat-msg { margin-bottom:14px; }
+.chat-msg .who { font-family: var(--mono); font-size:10px; letter-spacing:.12em; color: var(--ink-45); display:block; margin-bottom:4px; }
+/* 思考过程：等宽、灰、阶梯缩进，像终端日志 */
+.chat-think { font-family: var(--mono); font-size:11px; color: var(--ink-45); line-height:1.9; margin:6px 0 10px; }
+.chat-think div::before { content:"→ "; }
+.chat-input { display:flex; border-top:1px solid var(--ink); }
+.chat-input input {
+  flex:1; border:none; background:transparent; padding:12px 16px;
+  font-family: var(--sans); font-size:13.5px; outline:none; color: var(--ink);
+}
+.chat-input button { border:none; border-left:1px solid var(--ink); background: var(--ink); color: var(--paper); font-family: var(--mono); font-size:12px; padding:0 18px; cursor:pointer; }
+
+/* ============ 屏幕：记忆训练流程 ============ */
+.mem-stage { max-width:960px; margin:0 auto; }
+.mem-q { margin-bottom:22px; }
+.mem-q .paper-head { cursor:default; }
+.mem-q .answer { font-size:14.5px; line-height:2; color: var(--ink); }
+.mem-q .answer .lbl { font-family: var(--mono); font-size:10px; letter-spacing:.14em; color: var(--ink-45); display:block; margin-bottom:6px; }
+.mem-actions { display:flex; gap:14px; align-items:center; margin-top:26px; }
+/* 考核态 */
+.quiz-zone { display:none; }
+.mem-stage.quizzing .mem-show { display:none; }
+.mem-stage.quizzing .quiz-zone { display:block; animation: screenIn .4s var(--ease-out); }
+.kw-hint { display:none; margin:14px 0 0; }
+.kw-hint.show { display:block; animation: screenIn .3s var(--ease-out); }
+.quiz-feedback { display:none; margin-top:24px; }
+.quiz-feedback.show { display:block; animation: drop .6s var(--ease-snap) both; }
+.quiz-feedback .comment { font-size:14px; line-height:2; margin:12px 0; }
+.retry-flag { font-family: var(--mono); font-size:10px; letter-spacing:.1em; color: var(--seal); border:1px solid var(--seal); padding:2px 8px; margin-left:10px; }
+
+/* ============ 屏幕：题库总览 ============ */
+.bank-wrap { max-width:1100px; margin:0 auto; }
+.bank-progress { display:flex; align-items:center; gap:18px; margin-bottom:36px; }
+.bank-progress .track { flex:1; height:14px; border:1px solid var(--ink); position:relative; }
+.bank-progress .track i { position:absolute; inset:0 auto 0 0; width:43%; background: var(--ink); }
+.bank-progress .num { font-family: var(--mono); font-size:14px; font-variant-numeric:tabular-nums; }
+.bank-stack { margin-bottom:34px; }
+.bank-stack > h3 {
+  font-family: var(--serif); font-weight:600; font-size:24px; margin-bottom:14px;
+  display:flex; align-items:baseline; gap:14px;
+}
+.bank-stack > h3 .cnt { font-family: var(--mono); font-size:11px; color: var(--ink-45); letter-spacing:.1em; }
+.bank-sub { margin-bottom:18px; }
+.bank-sub .sub-head {
+  display:flex; align-items:center; gap:12px; margin-bottom:10px; cursor:pointer;
+}
+.bank-sub .sub-head .t { font-family: var(--mono); font-size:12px; letter-spacing:.1em; color: var(--ink-70); }
+.bank-sub .sub-head .mini { font-family: var(--mono); font-size:10px; color: var(--ink-45); }
+.bank-sub .sub-head .focus {
+  font-family: var(--mono); font-size:10px; letter-spacing:.1em; padding:1px 8px;
+  border:1px dashed var(--ink-25); color: var(--ink-25);
+}
+.bank-sub.starred .sub-head .focus { border-color: var(--seal); color: var(--seal); border-style:solid; }
+.bank-sub .cells { display:flex; flex-wrap:wrap; gap:8px; padding-left:2px; }
+.qcell {
+  width:16px; height:16px; border:1px solid var(--ink-45); background:transparent;
+  cursor:pointer; position:relative; transition: transform .15s;
+}
+.qcell:hover { transform: scale(1.3); outline:1px solid var(--ink); }
+.qcell.done { background: var(--ink); border-color: var(--ink); }
+.qcell.weak { background: repeating-linear-gradient(45deg, transparent 0 3px, rgba(192,57,43,.55) 3px 5px); border-color: var(--seal); }
+/* 悬停显示题目标签 */
+.qcell .tip {
+  display:none; position:absolute; bottom:22px; left:50%; transform:translateX(-50%);
+  white-space:nowrap; background: var(--ink); color: var(--paper);
+  font-family: var(--sans); font-size:12px; padding:4px 10px; z-index:var(--z-stamp);
+  pointer-events:none;
+}
+.qcell:hover .tip { display:block; }
+.bank-legend { display:flex; gap:20px; margin-top:8px; font-family: var(--mono); font-size:10px; color: var(--ink-45); letter-spacing:.08em; }
+.bank-legend i { width:12px; height:12px; display:inline-block; vertical-align:-2px; margin-right:6px; border:1px solid var(--ink-45); }
+.bank-legend .d { background: var(--ink); border-color: var(--ink); }
+.bank-legend .w { background: repeating-linear-gradient(45deg, transparent 0 3px, rgba(192,57,43,.55) 3px 5px); border-color: var(--seal); }
+</style>
+</head>
+<body>
+
+<!-- ============ 原型导航（仅原型用，非产品设计） ============ -->
+<nav class="proto-nav">
+  <span class="spacer"></span>
+  <button class="on" data-screen="s-home">01 首页</button>
+  <button data-screen="s-memorize">02 记忆训练</button>
+  <button data-screen="s-bank">03 题库总览</button>
+  <button data-screen="s-interview">04 面试答题</button>
+  <button data-screen="s-review">05 复盘报告</button>
+  <button data-screen="s-dash">06 仪表盘</button>
+</nav>
+
+<!-- ============ 屏幕一：首页 · 模式选择 ============ -->
+<section class="screen active" id="s-home">
+  <div class="home-head">
+    <div class="meta-row">
+      <span>RECALL — 记忆助手 / LOCAL</span>
+      <span id="home-date">2026.08.13 — THU</span>
+    </div>
+    <h1 class="home-title">今天，<br>进行哪一场<em>面试</em>？</h1>
+    <p class="home-sub">// 题库 14 题 · 已覆盖 6 题 · 近 7 天答题 9 次</p>
+  </div>
+
+  <div class="drawers">
+    <div class="drawer open">
+      <div class="drawer-row">
+        <span class="drawer-idx">NO.01</span>
+        <span class="drawer-name">记忆训练</span>
+        <span class="drawer-hint">MEMORIZE</span>
+      </div>
+      <div class="drawer-body"><div>
+        <div class="drawer-stats">
+          <div class="stat"><div class="k">未背题数</div><div class="v">8<small> / 14</small></div></div>
+          <div class="stat"><div class="k">待补答</div><div class="v" style="color:var(--seal)">2<small> 题</small></div></div>
+          <div class="stat"><div class="k">上次训练</div><div class="v">2<small> 天前</small></div></div>
+          <div class="stat"><div class="k">新题优先</div><div class="v">ON</div></div>
+        </div>
+        <div class="drawer-cta" style="border-top:1px solid var(--ink-12);padding-top:20px">
+          <div class="opt-group">
+            <span class="opt-label">题量</span>
+            <button class="opt on">3 题</button>
+            <button class="opt">5 题</button>
+            <button class="opt">7 题</button>
+          </div>
+        </div>
+        <div class="drawer-cta">
+          <button class="btn">开始记忆 →</button>
+          <span class="iv-note">面试答错的题会进入待补答队列，在这里优先重背</span>
+        </div>
+      </div></div>
+    </div>
+
+    <div class="drawer">
+      <div class="drawer-row">
+        <span class="drawer-idx">NO.02</span>
+        <span class="drawer-name">面试模拟</span>
+        <span class="drawer-hint">INTERVIEW</span>
+      </div>
+      <div class="drawer-body"><div>
+        <div class="drawer-stats">
+          <div class="stat"><div class="k">限时</div><div class="v">2:00</div></div>
+          <div class="stat"><div class="k">历史场次</div><div class="v">4<small> 场</small></div></div>
+          <div class="stat"><div class="k">平均得分</div><div class="v">72.4</div></div>
+        </div>
+        <div class="drawer-cta" style="border-top:1px solid var(--ink-12);padding-top:20px;flex-direction:column;align-items:flex-start;gap:14px">
+          <div class="opt-group">
+            <span class="opt-label">技术栈</span>
+            <button class="opt">PYTHON</button>
+            <button class="opt">AGENT</button>
+            <button class="opt">VUE 3</button>
+            <button class="opt opt--seal on">混合</button>
+          </div>
+          <div class="opt-group">
+            <span class="opt-label">题量</span>
+            <button class="opt">3 题</button>
+            <button class="opt on">4 题</button>
+            <button class="opt">5 题</button>
+          </div>
+        </div>
+        <div class="drawer-cta">
+          <button class="btn">进入面试 →</button>
+          <span class="iv-note">全程无反馈，终局统一复盘</span>
+        </div>
+      </div></div>
+    </div>
+
+    <div class="drawer">
+      <div class="drawer-row">
+        <span class="drawer-idx">NO.03</span>
+        <span class="drawer-name">回忆模式</span>
+        <span class="drawer-hint">RECALL</span>
+      </div>
+      <div class="drawer-body"><div>
+        <div class="drawer-stats">
+          <div class="stat"><div class="k">今日到期</div><div class="v">5<small> 题</small></div></div>
+          <div class="stat"><div class="k">最久未复习</div><div class="v">9<small> 天</small></div></div>
+          <div class="stat"><div class="k">平均得分</div><div class="v">72.4</div></div>
+          <div class="stat"><div class="k">调度</div><div class="v">EBH<small> 曲线</small></div></div>
+        </div>
+        <div class="drawer-cta">
+          <button class="btn">开始复习 →</button>
+          <span class="iv-note">只抽背过的题，按遗忘程度排序</span>
+        </div>
+      </div></div>
+    </div>
+  </div>
+
+  <div class="home-foot">
+    <span>RECALL · 记忆助手 — 八股面试训练</span>
+    <span>FIG.01 — MODE SELECT</span>
+  </div>
+</section>
+
+<!-- ============ 屏幕二：面试答题 ============ -->
+<section class="screen" id="s-interview">
+  <div class="iv-wrap">
+    <div class="iv-topbar">
+      <span>INTERVIEW — 混合场 4 题</span>
+      <span class="tag">第 2 / 4 题</span>
+      <span class="spacer"></span>
+      <span>限时开始作答</span>
+      <span class="iv-timer" id="iv-timer">1:47</span>
+    </div>
+    <div class="iv-line"><i id="iv-line"></i></div>
+
+    <div class="iv-agent">面试官 AGENT 提问中</div>
+    <h2 class="iv-question">“我们知道 CPython 里有个 GIL。那在实际项目里，它对多线程程序的性能到底意味着什么？你会怎么绕开它？”</h2>
+    <div class="iv-follow"><span class="tag tag--seal">追问 1 / 2</span></div>
+
+    <div id="iv-answer-zone">
+      <textarea class="iv-input" placeholder="开始输入即视为开始作答。用自己的话讲，别背。"></textarea>
+      <div class="iv-actions">
+        <button class="btn" id="iv-submit">提交回答</button>
+        <button class="btn btn--ghost">跳过本题</button>
+        <span class="spacer" style="flex:1"></span>
+        <span class="iv-note">// 面试模式下不反馈对错，终局统一复盘</span>
+      </div>
+    </div>
+
+    <div class="iv-recorded" id="iv-recorded">
+      <span class="stamp">已 记 录</span>
+      <p>ANSWER LOGGED — 评分将于终局复盘时公布</p>
+      <button class="btn">下一题 →</button>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 屏幕三：终局复盘 ============ -->
+<section class="screen" id="s-review">
+  <div class="rv-head">
+    <div>
+      <div class="mono" style="font-size:11px;letter-spacing:.14em;color:var(--ink-45);margin-bottom:10px">INTERVIEW REPORT — FILE №20260813-02</div>
+      <h1 class="rv-title">终局复盘报告</h1>
+    </div>
+    <span class="spacer"></span>
+    <div class="meta">场次：混合 4 题 · 用时 14:32<br>2026.08.13 — 面试官 AGENT / 评分 AGENT 联署</div>
+  </div>
+
+  <div class="rv-desk" id="rv-desk">
+    <div class="paper">
+      <div class="paper-head"><span class="no">Q1 — PYTHON</span><h3>GIL 与多线程性能</h3><span class="score">74.5<small> /100</small></span></div>
+      <span class="stamp">背诵痕迹</span>
+      <div class="dims">
+        <div class="dim">准确性 50%<b>95</b><div class="pixbar"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i class="off"></i></div></div>
+        <div class="dim">逻辑 30%<b>90</b><div class="pixbar"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i class="off"></i></div></div>
+        <div class="dim">自然度 20%<b style="color:var(--seal)">0</b><div class="pixbar"><i class="off"></i><i class="off"></i><i class="off"></i><i class="off"></i><i class="off"></i><i class="off"></i><i class="off"></i><i class="off"></i><i class="off"></i><i class="off"></i></div></div>
+      </div>
+      <div class="compare">
+        <div><span class="lbl">你的回答</span>GIL 就是全局解释器锁，它是 CPython 解释器中的一个互斥锁，确保同一时刻只有一个线程执行 Python 字节码，从而简化了内存管理，但限制了多线程在多核 CPU 上的并行能力……</div>
+        <div><span class="lbl">标准答案</span>GIL 是 CPython 的互斥锁，源于引用计数的线程安全问题。CPU 密集型任务无法真正并行，应使用多进程；I/O 密集型任务线程会在等待时释放 GIL，仍有并发收益……</div>
+      </div>
+      <ul class="miss" style="margin-top:14px">
+        <li>遗漏：GIL 存在的根本原因（引用计数线程安全）</li>
+        <li>遗漏：绕开方案（multiprocessing / C 扩展释放 GIL）</li>
+      </ul>
+    </div>
+
+    <div class="paper">
+      <div class="paper-head"><span class="no">Q2 — AGENT · 追问链 1/2</span><h3>ReAct 模式的推理循环</h3><span class="score">82.0<small> /100</small></span></div>
+      <div class="compare">
+        <div><span class="lbl">你的回答</span>ReAct 就是让模型一边想一边做：先 Reasoning 出下一步计划，再 Action 调工具，拿到观察结果后继续推理，直到任务完成……</div>
+        <div><span class="lbl">标准答案</span>ReAct 交替进行推理（Thought）与行动（Action），每轮行动后观察（Observation）环境反馈并纳入上下文，形成闭环……</div>
+      </div>
+    </div>
+
+    <div class="paper">
+      <div class="paper-head"><span class="no">ANALYSIS — 智能助理 AGENT</span><h3>薄弱点分析</h3></div>
+      <ul class="weak-list">
+        <li>并发专题：GIL 考点答得出定义、讲不出工程取舍，建议结合多进程方案再背一轮</li>
+        <li>表达自然度两场偏低，逐字复述标准答案的习惯需要纠正</li>
+        <li>Agent 方向掌握最好，可降低该方向抽题权重</li>
+        <li>Vue 3 已 9 天未出现，存在遗忘风险</li>
+      </ul>
+    </div>
+
+    <div class="paper">
+      <div class="paper-head"><span class="no">FOLLOW-UP — 后续安排</span><h3>答错题目去向</h3></div>
+      <div class="retry-box">
+        <span class="tag">Q1 GIL 与多线程性能</span>
+        <span class="tag">Q4 装饰器底层机制</span>
+        <span class="iv-note">// 已自动加入「记忆训练」待补答队列，复习巩固在那里完成</span>
+        <button class="btn">去记忆训练 →</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 屏幕四：仪表盘 ============ -->
+<section class="screen" id="s-dash">
+  <div class="rv-head">
+    <div>
+      <div class="mono" style="font-size:11px;letter-spacing:.14em;color:var(--ink-45);margin-bottom:10px">DASHBOARD — 智能助理 AGENT</div>
+      <h1 class="rv-title">背诵档案台</h1>
+    </div>
+    <span class="spacer"></span>
+    <div class="meta">已覆盖 6 / 14 题 · 连续打卡 3 天<br>数据截至 2026.08.13</div>
+  </div>
+
+  <div class="db-grid">
+    <div style="display:flex;flex-direction:column;gap:28px">
+      <div class="db-panel">
+        <h2>每日背诵记录 <span class="n">FIG.04-A</span></h2>
+        <div class="cal" id="cal"></div>
+        <div class="cal-legend">少 <i style="background:var(--ink-12)"></i><i style="background:rgba(25,25,25,.55)"></i><i style="background:var(--ink)"></i> 多</div>
+      </div>
+      <div class="db-panel">
+        <h2>近 7 天答题趋势 <span class="n">FIG.04-B</span></h2>
+        <svg class="chart-line" viewBox="0 0 560 160" id="trend"></svg>
+      </div>
+      <div class="db-panel">
+        <h2>各技术栈正确率 <span class="n">FIG.04-C</span></h2>
+        <div class="acc-row"><span class="name">PYTHON</span><div class="pixbar"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i class="off"></i><i class="off"></i><i class="off"></i></div><span class="pct">68%</span></div>
+        <div class="acc-row"><span class="name">AGENT</span><div class="pixbar"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i class="off"></i></div><span class="pct">86%</span></div>
+        <div class="acc-row"><span class="name">VUE 3</span><div class="pixbar"><i></i><i></i><i></i><i></i><i class="off"></i><i class="off"></i><i class="off"></i><i class="off"></i><i class="off"></i><i class="off"></i></div><span class="pct">41%</span></div>
+      </div>
+      <div class="db-panel" id="settings-panel">
+        <h2>模型与密钥配置 <span class="n">FIG.04-F</span></h2>
+        <div class="set-row">
+          <span class="lbl">PROVIDER</span>
+          <div class="opt-group">
+            <button class="opt on">DEEPSEEK</button>
+            <button class="opt">KIMI</button>
+            <button class="opt">智谱</button>
+            <button class="opt">豆包</button>
+          </div>
+        </div>
+        <div class="set-row">
+          <span class="lbl">模型</span>
+          <input class="set-input" value="deepseek-chat">
+        </div>
+        <div class="set-row">
+          <span class="lbl">API KEY</span>
+          <input class="set-input" type="password" placeholder="sk-…（仅保存到本地 .env）" id="key-input">
+        </div>
+        <div class="set-row">
+          <span class="lbl"></span>
+          <button class="btn btn--ghost" style="padding:7px 18px;font-size:12px" id="env-pull">从环境变量提取</button>
+          <span class="key-status" id="key-status">当前：<b>未配置</b></span>
+          <span style="flex:1"></span>
+          <button class="btn" style="padding:7px 18px;font-size:12px">保存到本地</button>
+        </div>
+        <div class="set-note">
+          <span class="seal">// 红线：KEY 不上传、不外泄</span><br>
+          // 仅写入本机 .env；接口只回掩码（sk-••••81d7）；不入日志、不进 localStorage<br>
+          // 唯一外发路径：后端 → 所选 PROVIDER 官方 API
+        </div>
+      </div>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:28px">
+      <div class="db-panel">
+        <h2>知识图谱 <span class="n">FIG.04-D</span></h2>
+        <svg class="kg" viewBox="0 0 440 320" id="kgraph"></svg>
+        <div class="kg-legend">
+          <span><i style="background:var(--ink)"></i>掌握</span>
+          <span><i style="border:1.5px dashed var(--seal)"></i>薄弱</span>
+          <span><i style="background:var(--ink-12)"></i>未覆盖</span>
+        </div>
+      </div>
+      <div class="db-panel">
+        <h2>今日建议背诵 <span class="n">FIG.04-E</span></h2>
+        <ul class="suggest">
+          <li><span class="d">9 天未练</span><span class="t">Vue 3 响应式原理（Proxy vs defineProperty）</span><span class="s">41%</span></li>
+          <li><span class="d">背诵痕迹</span><span class="t">GIL 与多线程性能</span><span class="s">74.5</span></li>
+          <li><span class="d">低分</span><span class="t">装饰器底层机制</span><span class="s">56.5</span></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 屏幕：记忆训练流程 ============ -->
+<section class="screen" id="s-memorize">
+  <div class="mem-stage" id="mem-stage">
+    <div class="iv-topbar">
+      <span>MEMORIZE — PYTHON · 本轮 3 题</span>
+      <span class="spacer"></span>
+      <span>MEMORIZE_SHOW — 记忆中</span>
+    </div>
+    <div class="iv-line" style="margin-bottom:36px"><i style="width:100%"></i></div>
+
+    <!-- 阶段一：展示题干+答案供记忆 -->
+    <div class="mem-show">
+      <div class="paper mem-q">
+        <div class="paper-head"><span class="no">题 1 / 3</span><h3>Python 的 GIL 是什么？对多线程有何影响？</h3><span class="retry-flag">待补答</span></div>
+        <div class="answer"><span class="lbl">标准答案</span>GIL（全局解释器锁）是 CPython 中的互斥锁，保证同一时刻只有一个线程执行字节码。它存在的根本原因是引用计数的内存管理不是线程安全的。CPU 密集型任务无法利用多核，应改用多进程；I/O 密集型任务中线程等待时会释放 GIL，仍有并发收益。</div>
+      </div>
+      <div class="paper mem-q">
+        <div class="paper-head"><span class="no">题 2 / 3</span><h3>装饰器的底层原理是什么？</h3></div>
+        <div class="answer"><span class="lbl">标准答案</span>装饰器本质是"接收函数、返回函数"的高阶函数，@语法糖等价于 func = decorator(func)。通过闭包保存原函数引用，用 functools.wraps 保留原函数元信息。带参装饰器需要再嵌套一层。</div>
+      </div>
+      <div class="paper mem-q">
+        <div class="paper-head"><span class="no">题 3 / 3</span><h3>生成器与迭代器的区别？</h3></div>
+        <div class="answer"><span class="lbl">标准答案</span>迭代器是实现 __iter__ 和 __next__ 的对象；生成器是特殊的迭代器，用 yield 惰性产生值，函数调用时返回生成器对象而不立即执行，每次 next 从上次 yield 处继续。生成器表达式比列表推导更省内存。</div>
+      </div>
+      <div class="mem-actions">
+        <button class="btn" id="mem-start-quiz">我记好了，开始考核 →</button>
+        <span class="iv-note">// 考核时将打乱顺序，只显示变体题干</span>
+      </div>
+    </div>
+
+    <!-- 阶段二：打乱考核 + 即时反馈 -->
+    <div class="quiz-zone">
+      <div class="iv-agent">面试官 AGENT 提问中</div>
+      <h2 class="iv-question" style="font-size:clamp(22px,2.6vw,30px)">"聊一下装饰器吧——它底下到底是怎么工作的？为什么加了 @ 就能增强一个函数？"</h2>
+      <div class="iv-follow"><span class="tag">考核 1 / 3 · 已打乱</span></div>
+      <div style="margin-bottom:16px">
+        <button class="btn btn--ghost" id="kw-btn" style="padding:7px 20px;font-size:12px">提示（关键词）</button>
+        <div class="kw-hint" id="kw-hint">
+          <span class="tag">高阶函数</span> <span class="tag">闭包</span> <span class="tag">functools.wraps</span> <span class="tag">语法糖</span>
+        </div>
+      </div>
+      <textarea class="iv-input" style="min-height:150px" placeholder="用自己的话讲，别背。"></textarea>
+      <div class="iv-actions">
+        <button class="btn" id="quiz-submit">提交回答</button>
+      </div>
+
+      <!-- 即时反馈面板 -->
+      <div class="paper quiz-feedback" id="quiz-feedback">
+        <div class="paper-head"><span class="no">FEEDBACK — 评分 AGENT</span><h3>本题反馈</h3><span class="score">67.1<small> /100</small></span></div>
+        <div class="dims">
+          <div class="dim">准确性 50%<b>72</b><div class="pixbar"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i class="off"></i><i class="off"></i><i class="off"></i></div></div>
+          <div class="dim">逻辑 30%<b>80</b><div class="pixbar"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i class="off"></i><i class="off"></i></div></div>
+          <div class="dim">自然度 20%<b style="color:var(--seal)">3</b><div class="pixbar"><i class="off"></i><i class="off"></i><i class="off"></i><i class="off"></i><i class="off"></i><i class="off"></i><i class="off"></i><i class="off"></i><i class="off"></i><i class="off"></i></div></div>
+        </div>
+        <p class="comment">点评：核心机制讲到了高阶函数和闭包，但与标准答案逐字重合率 48%，有明显背诵痕迹；functools.wraps 的作用未提及。建议合上讲义，用"装饰器就像给函数穿外套"这类自己的比喻重述一遍。</p>
+        <div class="compare">
+          <div><span class="lbl">你的回答</span>装饰器是接收函数返回函数的高阶函数，通过闭包保存原函数引用……</div>
+          <div><span class="lbl">标准答案</span>装饰器本质是"接收函数、返回函数"的高阶函数，@语法糖等价于 func = decorator(func)……</div>
+        </div>
+        <div class="mem-actions">
+          <button class="btn">下一题 →</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 屏幕：题库总览 ============ -->
+<section class="screen" id="s-bank">
+  <div class="bank-wrap">
+    <div class="iv-topbar" style="margin-bottom:14px">
+      <span>QUESTION BANK — 题库总览</span>
+      <span class="spacer"></span>
+      <span>点击分组可圈选"重点背诵"</span>
+    </div>
+    <div class="bank-progress">
+      <span class="mono" style="font-size:11px;letter-spacing:.12em;color:var(--ink-45)">已背诵</span>
+      <div class="track"><i></i></div>
+      <span class="num">6 / 14</span>
+    </div>
+
+    <div class="bank-stack">
+      <h3>Python <span class="cnt">6 题 · 已背 2</span></h3>
+      <div class="bank-sub starred">
+        <div class="sub-head"><span class="t">并发编程</span><span class="mini">2 题</span><span class="focus">重点背诵</span></div>
+        <div class="cells">
+          <div class="qcell weak"><span class="tip">GIL 与多线程性能 · 74.5 分 · 背诵痕迹</span></div>
+          <div class="qcell"><span class="tip">协程与 asyncio · 未背</span></div>
+        </div>
+      </div>
+      <div class="bank-sub">
+        <div class="sub-head"><span class="t">Web / FastAPI</span><span class="mini">2 题</span><span class="focus">+ 设为重点</span></div>
+        <div class="cells">
+          <div class="qcell"><span class="tip">FastAPI 依赖注入 · 未背</span></div>
+          <div class="qcell"><span class="tip">Pydantic 数据校验 · 未背</span></div>
+        </div>
+      </div>
+      <div class="bank-sub">
+        <div class="sub-head"><span class="t">语言基础</span><span class="mini">2 题</span><span class="focus">+ 设为重点</span></div>
+        <div class="cells">
+          <div class="qcell weak"><span class="tip">装饰器底层机制 · 56.5 分 · 待补答</span></div>
+          <div class="qcell done"><span class="tip">生成器与迭代器 · 85 分</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="bank-stack">
+      <h3>Agent <span class="cnt">4 题 · 已背 3</span></h3>
+      <div class="bank-sub">
+        <div class="sub-head"><span class="t">推理范式</span><span class="mini">2 题</span><span class="focus">+ 设为重点</span></div>
+        <div class="cells">
+          <div class="qcell done"><span class="tip">ReAct 模式 · 82 分</span></div>
+          <div class="qcell done"><span class="tip">Plan-and-Execute · 78 分</span></div>
+        </div>
+      </div>
+      <div class="bank-sub">
+        <div class="sub-head"><span class="t">工具调用</span><span class="mini">2 题</span><span class="focus">+ 设为重点</span></div>
+        <div class="cells">
+          <div class="qcell done"><span class="tip">Function Calling 原理 · 88 分</span></div>
+          <div class="qcell"><span class="tip">MCP 协议 · 未背</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="bank-stack">
+      <h3>Vue 3 <span class="cnt">4 题 · 已背 1</span></h3>
+      <div class="bank-sub">
+        <div class="sub-head"><span class="t">响应式系统</span><span class="mini">2 题</span><span class="focus">+ 设为重点</span></div>
+        <div class="cells">
+          <div class="qcell weak"><span class="tip">Proxy vs defineProperty · 41% · 9 天未练</span></div>
+          <div class="qcell"><span class="tip">ref vs reactive · 未背</span></div>
+        </div>
+      </div>
+      <div class="bank-sub">
+        <div class="sub-head"><span class="t">状态管理</span><span class="mini">2 题</span><span class="focus">+ 设为重点</span></div>
+        <div class="cells">
+          <div class="qcell done"><span class="tip">Pinia 核心概念 · 80 分</span></div>
+          <div class="qcell"><span class="tip">Pinia vs Vuex · 未背</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="bank-legend">
+      <span><i class="d"></i>已掌握</span>
+      <span><i class="w"></i>薄弱 / 待补答</span>
+      <span><i></i>未背诵</span>
+      <span style="margin-left:auto">// 状态仅供你参考，Agent 抽题仍以真实表现为准</span>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 水墨小螃蟹 · 智能助理入口 ============ -->
+<div class="crab" id="crab" title="记忆助手">
+  <!-- 水墨螃蟹：笔触式 path，躯干+双钳+八足，纯墨色 -->
+  <svg viewBox="0 0 84 84" fill="none" stroke="var(--ink)" stroke-linecap="round">
+    <g class="crab-body">
+      <!-- 躯干：两笔浓淡叠加出水墨感 -->
+      <ellipse cx="42" cy="48" rx="16" ry="11" fill="var(--ink)" opacity=".88"/>
+      <ellipse cx="42" cy="46" rx="13" ry="8.5" fill="var(--ink-45)" opacity=".5" stroke="none"/>
+      <!-- 眼 -->
+      <line x1="37" y1="38" x2="36" y2="33" stroke-width="2.2"/>
+      <line x1="47" y1="38" x2="48" y2="33" stroke-width="2.2"/>
+      <circle cx="36" cy="32" r="1.8" fill="var(--ink)" stroke="none"/>
+      <circle cx="48" cy="32" r="1.8" fill="var(--ink)" stroke="none"/>
+      <!-- 左足（四笔） -->
+      <path d="M28 44 Q20 42 15 36" stroke-width="2.4"/>
+      <path d="M27 49 Q18 50 12 47" stroke-width="2.4"/>
+      <path d="M28 54 Q20 58 14 58" stroke-width="2.4"/>
+      <path d="M31 58 Q26 64 20 66" stroke-width="2.4"/>
+      <!-- 右足 -->
+      <path d="M56 44 Q64 42 69 36" stroke-width="2.4"/>
+      <path d="M57 49 Q66 50 72 47" stroke-width="2.4"/>
+      <path d="M56 54 Q64 58 70 58" stroke-width="2.4"/>
+      <path d="M53 58 Q58 64 64 66" stroke-width="2.4"/>
+      <!-- 左钳 -->
+      <g class="claw-l">
+        <path d="M27 42 Q18 34 16 26" stroke-width="2.8"/>
+        <path d="M16 26 Q13 20 17 17 Q22 15 23 21 Q24 26 19 28 Z" fill="var(--ink)" stroke-width="1.5"/>
+      </g>
+      <!-- 右钳 -->
+      <g class="claw-r">
+        <path d="M57 42 Q66 34 68 26" stroke-width="2.8"/>
+        <path d="M68 26 Q71 20 67 17 Q62 15 61 21 Q60 26 65 28 Z" fill="var(--ink)" stroke-width="1.5"/>
+      </g>
+    </g>
+  </svg>
+  <span class="crab-tip">记忆助手 · 点击召唤</span>
+</div>
+
+<!-- 对话面板 -->
+<div class="chat-panel" id="chat-panel">
+  <div class="chat-head"><b>记忆助手</b><span>RECALL ASSISTANT</span><span class="x" id="chat-close">✕</span></div>
+  <div class="chat-quick">
+    <button data-q="总结我今天的背诵">今日总结</button>
+    <button data-q="总结我最近的背诵">最近总结</button>
+    <button data-q="总结我全部的背诵">全部总结</button>
+    <button data-q="我需要重点背诵哪些内容？">重点背诵建议</button>
+    <button data-q="帮我规划一个背诵计划">制定背诵计划</button>
+  </div>
+  <div class="chat-log" id="chat-log">
+    <div class="chat-msg"><span class="who">记忆助手</span>你好，我守着你的背诵档案。点上面的快捷指令，或者直接问我。</div>
+  </div>
+  <div class="chat-input">
+    <input id="chat-text" placeholder="问点什么…">
+    <button id="chat-send">发送</button>
+  </div>
+</div>
+
+<script>
+/* ===== 屏幕切换 ===== */
+const navBtns = document.querySelectorAll('.proto-nav button');
+navBtns.forEach(b => b.addEventListener('click', () => {
+  navBtns.forEach(x => x.classList.remove('on'));
+  b.classList.add('on');
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  document.getElementById(b.dataset.screen).classList.add('active');
+}));
+
+/* ===== 档案抽屉：点击切换开合（手风琴，同时只展开一个） ===== */
+document.querySelectorAll('.drawer').forEach(d => {
+  d.querySelector('.drawer-row').addEventListener('click', () => {
+    const wasOpen = d.classList.contains('open');
+    document.querySelectorAll('.drawer').forEach(x => x.classList.remove('open'));
+    if (!wasOpen) d.classList.add('open');
+  });
+});
+
+/* ===== 可选项胶囊：单选 ===== */
+document.querySelectorAll('.opt-group').forEach(g => {
+  g.querySelectorAll('.opt').forEach(o => o.addEventListener('click', e => {
+    g.querySelectorAll('.opt').forEach(x => x.classList.remove('on'));
+    o.classList.add('on');
+    e.stopPropagation();
+  }));
+});
+
+/* ===== 面试倒计时演示 ===== */
+(function(){
+  let sec = 107; // 1:47
+  const t = document.getElementById('iv-timer');
+  const line = document.getElementById('iv-line');
+  setInterval(() => {
+    sec = Math.max(0, sec - 1);
+    const m = Math.floor(sec/60), s = String(sec%60).padStart(2,'0');
+    t.textContent = m + ':' + s;
+    line.style.width = (sec/120*100) + '%';
+    if (sec === 0) { t.classList.add('over'); line.parentElement.classList.add('over'); t.textContent = '已超时'; sec = 107; t.classList.remove('over'); line.parentElement.classList.remove('over'); }
+  }, 1000);
+})();
+
+/* ===== 提交 → 已记录印章 ===== */
+document.getElementById('iv-submit').addEventListener('click', () => {
+  document.getElementById('iv-answer-zone').style.display = 'none';
+  document.getElementById('iv-recorded').classList.add('show');
+});
+
+/* ===== 复盘纸张可拖拽 ===== */
+(function(){
+  const desk = document.getElementById('rv-desk');
+  desk.querySelectorAll('.paper').forEach(p => {
+    const head = p.querySelector('.paper-head');
+    head.addEventListener('pointerdown', e => {
+      const r = p.getBoundingClientRect();
+      const dx = e.clientX - r.left, dy = e.clientY - r.top;
+      p.classList.add('dragging');
+      p.style.position = 'relative';
+      const move = ev => {
+        const dr = desk.getBoundingClientRect();
+        p.style.left = Math.max(-40, Math.min(dr.width - 120, ev.clientX - dr.left - dx)) + 'px';
+        p.style.top  = Math.max(-10, Math.min(120, ev.clientY - dr.top - dy)) + 'px';
+      };
+      const up = () => {
+        p.classList.remove('dragging');
+        window.removeEventListener('pointermove', move);
+        window.removeEventListener('pointerup', up);
+      };
+      window.addEventListener('pointermove', move);
+      window.addEventListener('pointerup', up);
+      e.preventDefault();
+    });
+  });
+})();
+
+/* ===== 日历热力格（演示数据） ===== */
+(function(){
+  const cal = document.getElementById('cal');
+  const data = [0,1,0,2,3,1,0, 1,2,4,2,0,1,3, 0,1,3,2,4,1,0, 2,1,0,3,2,4,1];
+  data.forEach(v => {
+    const i = document.createElement('i');
+    if (v) i.className = 'l' + v;
+    cal.appendChild(i);
+  });
+})();
+
+/* ===== 7 天趋势折线（SVG 手绘） ===== */
+(function(){
+  const svg = document.getElementById('trend');
+  const vals = [2, 0, 3, 1, 4, 2, 3];
+  const W = 560, H = 160, pad = 28;
+  const max = 5;
+  const px = i => pad + i * (W - pad*2) / 6;
+  const py = v => H - pad - v * (H - pad*2) / max;
+  let html = '';
+  // 坐标格
+  for (let g = 0; g <= max; g++) {
+    html += `<line x1="${pad}" y1="${py(g)}" x2="${W-pad}" y2="${py(g)}" stroke="rgba(25,25,25,.12)" stroke-width="1" ${g?'stroke-dasharray="2 4"':''}/>`;
+    html += `<text x="${pad-8}" y="${py(g)+4}" text-anchor="end" font-family="var(--mono)" font-size="9" fill="rgba(25,25,25,.45)">${g}</text>`;
+  }
+  const days = ['四','五','六','日','一','二','三'];
+  days.forEach((d,i) => html += `<text x="${px(i)}" y="${H-8}" text-anchor="middle" font-family="var(--mono)" font-size="9" fill="rgba(25,25,25,.45)">周${d}</text>`);
+  // 阶梯折线（图纸感：直角转折而非圆滑曲线）
+  let path = `M ${px(0)} ${py(vals[0])}`;
+  for (let i = 1; i < vals.length; i++) path += ` H ${px(i)} V ${py(vals[i])}`;
+  html += `<path d="${path}" fill="none" stroke="var(--ink)" stroke-width="2"/>`;
+  vals.forEach((v,i) => {
+    html += `<rect x="${px(i)-4}" y="${py(v)-4}" width="8" height="8" fill="var(--paper-hi)" stroke="var(--ink)" stroke-width="1.5"/>`;
+    html += `<text x="${px(i)}" y="${py(v)-12}" text-anchor="middle" font-family="var(--mono)" font-size="10" fill="var(--ink)">${v}</text>`;
+  });
+  svg.innerHTML = html;
+})();
+
+/* ===== 知识图谱（SVG 手绘） ===== */
+(function(){
+  const svg = document.getElementById('kgraph');
+  const roots = [
+    { x: 80,  y: 70,  label: 'PYTHON' },
+    { x: 320, y: 70,  label: 'AGENT' },
+    { x: 200, y: 260, label: 'VUE 3' },
+  ];
+  const kids = {
+    'PYTHON': [ {x:40,y:150,t:'GIL',s:'weak'}, {x:130,y:160,t:'装饰器',s:'weak'}, {x:70,y:210,t:'生成器',s:'todo'} ],
+    'AGENT':  [ {x:300,y:150,t:'ReAct',s:'mastered'}, {x:360,y:180,t:'FunctionCall',s:'mastered'} ],
+    'VUE 3':  [ {x:110,y:300,t:'响应式',s:'weak'}, {x:200,y:318,t:'Pinia',s:'todo'}, {x:290,y:300,t:'Diff',s:'todo'} ],
+  };
+  let html = '';
+  roots.forEach(r => {
+    kids[r.label].forEach(k => {
+      html += `<line class="lk" x1="${r.x}" y1="${r.y}" x2="${k.x}" y2="${k.y}"/>`;
+    });
+  });
+  roots.forEach(r => {
+    kids[r.label].forEach(k => {
+      html += `<rect class="node-${k.s}" x="${k.x-7}" y="${k.y-7}" width="14" height="14"/>`;
+      html += `<text x="${k.x+12}" y="${k.y+4}">${k.t}</text>`;
+    });
+  });
+  roots.forEach(r => {
+    html += `<rect class="root" x="${r.x-11}" y="${r.y-11}" width="22" height="22"/>`;
+    html += `<text class="root-label" x="${r.x}" y="${r.y-20}" text-anchor="middle">${r.label}</text>`;
+  });
+  svg.innerHTML = html;
+})();
+/* ===== 记忆训练流程演示：展示 → 考核 → 即时反馈 ===== */
+document.getElementById('mem-start-quiz').addEventListener('click', () => {
+  document.getElementById('mem-stage').classList.add('quizzing');
+});
+document.getElementById('kw-btn').addEventListener('click', () => {
+  document.getElementById('kw-hint').classList.toggle('show');
+});
+document.getElementById('quiz-submit').addEventListener('click', () => {
+  document.getElementById('quiz-feedback').classList.add('show');
+});
+
+/* ===== 题库总览：圈选重点背诵分组 ===== */
+document.querySelectorAll('.bank-sub .sub-head').forEach(h => {
+  h.addEventListener('click', () => {
+    const sub = h.parentElement;
+    sub.classList.toggle('starred');
+    h.querySelector('.focus').textContent = sub.classList.contains('starred') ? '重点背诵' : '+ 设为重点';
+  });
+});
+
+/* ===== 设置：从环境变量提取（演示） ===== */
+document.getElementById('env-pull').addEventListener('click', () => {
+  document.getElementById('key-status').innerHTML = '当前：<b>DEEPSEEK_API_KEY（环境变量）</b> sk-••••81d7';
+});
+
+/* ===== 水墨螃蟹：开合对话面板 + 模拟问答 ===== */
+(function(){
+  const crab = document.getElementById('crab');
+  const panel = document.getElementById('chat-panel');
+  const log = document.getElementById('chat-log');
+  crab.addEventListener('click', () => panel.classList.toggle('show'));
+  document.getElementById('chat-close').addEventListener('click', () => panel.classList.remove('show'));
+
+  // 演示用假回复：先展示"思考过程"（调用链），再给结论
+  function ask(text){
+    log.insertAdjacentHTML('beforeend', `<div class="chat-msg"><span class="who">你</span>${text}</div>`);
+    const think = document.createElement('div');
+    think.className = 'chat-msg';
+    think.innerHTML = `<span class="who">思考过程</span><div class="chat-think"><div>总控 Agent：解析意图 → 背诵情况查询</div><div>智能助理 Agent：查询 records / daily_stats …</div><div>智能助理 Agent：聚合 3 个技术栈正确率 …</div></div>`;
+    log.appendChild(think);
+    log.scrollTop = log.scrollHeight;
+    setTimeout(() => {
+      log.insertAdjacentHTML('beforeend', `<div class="chat-msg"><span class="who">记忆助手</span>你今天完成 1 场面试模拟（4 题，均分 72.4），其中 GIL 一题被判背诵痕迹。建议：先把「装饰器」补答掉，再开始 Vue 3 响应式——它已经 9 天没出现了。</div>`);
+      log.scrollTop = log.scrollHeight;
+    }, 1200);
+  }
+  document.querySelectorAll('.chat-quick button').forEach(b => b.addEventListener('click', () => ask(b.dataset.q)));
+  document.getElementById('chat-send').addEventListener('click', () => {
+    const t = document.getElementById('chat-text');
+    if (t.value.trim()) { ask(t.value.trim()); t.value = ''; }
+  });
+  document.getElementById('chat-text').addEventListener('keydown', e => {
+    if (e.key === 'Enter') document.getElementById('chat-send').click();
+  });
+})();
+</script>
+</body>
+</html>
