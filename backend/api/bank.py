@@ -15,7 +15,7 @@ from models import Question, QuestionFocus, Record, RetryQueueItem
 router = APIRouter(prefix="/bank", tags=["bank"])
 
 # 技术栈展示名
-STACK_DISPLAY = {"python": "Python", "agent": "Agent", "vue3": "Vue 3"}
+STACK_DISPLAY = {"python": "Python", "agent": "Agent", "vue3": "Vue 3", "database": "Database"}
 
 
 def get_db():
@@ -139,6 +139,7 @@ class ImportRequest(BaseModel):
     text: str  # 原始文本或 JSON 数组字符串
     dedupe: bool = True  # 是否按题干相似度去重（阈值见 importer.SIMILARITY_THRESHOLD）
     max_questions: Optional[int] = None  # 最多录入题数，None=不限（便于测试与分批导入）
+    force_llm_extract: bool = False  # 强制整段走 LLM 结构化提取（跳过规则分段，适合无标签长文）
 
 
 def _title_of(stem: str) -> str:
@@ -148,33 +149,45 @@ def _title_of(stem: str) -> str:
 
 
 async def _run_import(text: str, dedupe: bool, db: DBSession,
-                      max_questions: Optional[int] = None) -> dict:
+                      max_questions: Optional[int] = None,
+                      force_llm_extract: bool = False) -> dict:
     """录入清洗共用管线（/import 与 /import-file 共用）：
 
     解析 → LLM 提取/补全 → 相似度去重 → 入库。
     max_questions 在规整字段后截断条目数（同时限制 LLM 补全的规模），方便测试与分批导入。
+    force_llm_extract=True 时跳过规则分段，整段按块走 LLM 提取真问题
+    （PDF 提取的文本没有「答案：」标签行，规则分段会把正文段落当成题干）。
     """
     result: dict = {"imported": [], "skipped": [], "enriched": [], "errors": []}
     if not text.strip():
         result["errors"].append({"title": "（空输入）", "reason": "没有可解析的内容"})
         return result
 
-    # 1. 规则解析
-    items, leftovers = importer.parse_text(text)
-
-    # 2. LLM 结构化提取兜底（解析不出的片段）
-    if leftovers:
+    # 1. 解析 + 2. LLM 结构化提取
+    if force_llm_extract:
+        # 强制路径：整段切块走 LLM，不经过规则分段
         try:
-            items += await importer.llm_extract(leftovers)
+            extracted, extract_errors = await importer.extract_questions_with_llm(text)
+            items = extracted
+            for err in extract_errors:
+                result["errors"].append({"title": "（LLM 提取）", "reason": err})
         except importer.LLMProviderUnavailableError as exc:
-            for chunk in leftovers:
-                result["errors"].append({
-                    "title": _title_of(chunk),
-                    "reason": f"规则解析失败，且 LLM 不可用：{exc}",
-                })
-        except ValueError as exc:
-            for chunk in leftovers:
-                result["errors"].append({"title": _title_of(chunk), "reason": f"LLM 提取失败：{exc}"})
+            result["errors"].append({"title": "（LLM 提取）", "reason": f"LLM 不可用：{exc}"})
+            return result
+    else:
+        items, leftovers = importer.parse_text(text)
+        if leftovers:
+            try:
+                items += await importer.llm_extract(leftovers)
+            except importer.LLMProviderUnavailableError as exc:
+                for chunk in leftovers:
+                    result["errors"].append({
+                        "title": _title_of(chunk),
+                        "reason": f"规则解析失败，且 LLM 不可用：{exc}",
+                    })
+            except ValueError as exc:
+                for chunk in leftovers:
+                    result["errors"].append({"title": _title_of(chunk), "reason": f"LLM 提取失败：{exc}"})
 
     # 3. 规整字段（技术栈归一化），丢掉连题干都没有的
     valid: list[dict] = []
@@ -249,14 +262,15 @@ async def bank_import(req: ImportRequest, db: DBSession = Depends(get_db)):
 
     流程：
     1. 解析 text（JSON 数组直接解析；纯文本按 空行/--- 切分，识别"答案：""技术栈：""知识点："行）；
+       force_llm_extract=true 时跳过规则分段，整段切块走 LLM 提取真问题；
     2. 规则解析不出的片段，一次 LLM 调用做结构化提取；
-    3. 缺答案/缺技术栈的题，一次 LLM 调用批量补全（tech_stack 限定 python/agent/vue3）；
+    3. 缺答案/缺技术栈的题，一次 LLM 调用批量补全（tech_stack 限定 python/agent/vue3/database）；
     4. dedupe=true 时，与库内题目 + 本批次已接受题逐一算题干相似度，≥ 阈值跳过；
     5. 通过的题插入 Question 表（tags=[技术栈, 知识点]，与种子脚本约定一致）。
 
     LLM 不可用时降级：能解析完整的题照常入库，缺答案的进 errors。
     """
-    return await _run_import(req.text, req.dedupe, db, req.max_questions)
+    return await _run_import(req.text, req.dedupe, db, req.max_questions, req.force_llm_extract)
 
 
 # ---------- 文件上传录入（PDF / md / txt / json） ----------
@@ -284,9 +298,14 @@ async def bank_import_file(
     file: UploadFile = File(...),  # 上传文件：.pdf 用 pypdf 提取，.md/.txt/.json 读文本
     dedupe: bool = Form(True),
     max_questions: Optional[int] = Form(None),  # 最多录入题数，None=不限
+    force_llm_extract: bool = Form(False),  # 强制整段走 LLM 提取；.pdf 自动为 True
     db: DBSession = Depends(get_db),
 ):
-    """文件录入题库：提取文本后走与 /import 完全相同的清洗管线 _run_import。"""
+    """文件录入题库：提取文本后走与 /import 完全相同的清洗管线 _run_import。
+
+    PDF 提取出的文本没有「答案：」标签行，规则分段会把正文段落当成题干，
+    故 .pdf 一律强制走 LLM 结构化提取真问题。
+    """
     import os
     ext = os.path.splitext(file.filename or "")[1].lower()
     if ext not in _TEXT_EXTS and ext != ".pdf":
@@ -301,5 +320,6 @@ async def bank_import_file(
             text = raw.decode("utf-8")
         except UnicodeDecodeError:
             raise HTTPException(status_code=400, detail="文本文件解码失败（请使用 UTF-8 编码）")
-    return await _run_import(text, dedupe, db, max_questions)
+    force = force_llm_extract or ext == ".pdf"
+    return await _run_import(text, dedupe, db, max_questions, force)
 

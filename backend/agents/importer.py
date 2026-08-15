@@ -4,11 +4,12 @@
 职责：
 1. 解析用户提供的原始文本/JSON 为结构化题目条目；
 2. 纯文本解析不出的片段，交给 LLM 做结构化提取（一次调用提取多题）；
-3. 对缺标准答案 / 缺技术栈分类的条目，批量调 LLM 补全；
-4. 提供题干文本相似度（difflib + 字符 bigram Jaccard 取较大值），供入库前去重。
+3. PDF 等无标签长文本：extract_questions_with_llm 强制整段切块走 LLM 提取真问题；
+4. 对缺标准答案 / 缺技术栈分类的条目，批量调 LLM 补全；
+5. 提供题干文本相似度（difflib + 字符 bigram Jaccard 取较大值），供入库前去重。
 
-数据流：api/bank.py 的 POST /api/bank/import 调用本模块，
-解析 → LLM 提取（兜底）→ LLM 补全 → 相似度去重 → 写 Question 表。
+数据流：api/bank.py 的 POST /api/bank/import（/import-file）调用本模块，
+解析（或强制 LLM 提取）→ LLM 提取（兜底）→ LLM 补全 → 相似度去重 → 写 Question 表。
 """
 import json
 import re
@@ -21,14 +22,16 @@ from llm.router import LLMProviderUnavailableError
 # 题干相似度阈值：>= 该值视为重复，跳过入库
 SIMILARITY_THRESHOLD = 0.85
 
-# 允许的技术栈分类（与种子题库约定一致）
-ALLOWED_STACKS = {"python", "agent", "vue3"}
+# 允许的技术栈分类（与种子题库约定一致；database 为数据库题新增）
+ALLOWED_STACKS = {"python", "agent", "vue3", "database"}
 
 # 用户手填技术栈的常见别名 → 规范 key
 _STACK_ALIASES = {
     "py": "python", "python": "python", "python3": "python",
     "vue": "vue3", "vue3": "vue3", "vue 3": "vue3", "vuejs": "vue3", "前端": "vue3",
     "agent": "agent", "agents": "agent", "智能体": "agent", "大模型": "agent", "llm": "agent",
+    "database": "database", "db": "database", "mysql": "database", "sql": "database",
+    "数据库": "database", "后端": "python",
 }
 
 # 题内字段标签行：答案：/ 技术栈：/ 知识点：（兼容半角冒号与英文 key）
@@ -48,6 +51,14 @@ _EXTRACT_SYSTEM = (
 
 _ENRICH_SYSTEM = (
     "你是技术面试题库编辑。为给定的面试题补全缺失字段，"
+    "只输出一个 JSON 数组，不要输出任何其他文字或 Markdown 代码块。"
+)
+
+# PDF 强制提取：LLM 切块的目标大小（按段落边界累积，尽量不切断一道题）
+_PDF_CHUNK_CHARS = 2800
+
+_PDF_EXTRACT_SYSTEM = (
+    "你是技术面试题库编辑。从面试资料原文中提取真正的面试题，"
     "只输出一个 JSON 数组，不要输出任何其他文字或 Markdown 代码块。"
 )
 
@@ -183,7 +194,7 @@ async def llm_extract(chunks: list[str]) -> list[dict[str, Any]]:
             "输出 JSON 数组，每个元素字段：\n"
             "- stem：标准题干，一句面试提问；\n"
             "- answer：片段里给出的答案（没有就留空字符串）；\n"
-            "- tech_stack：python / agent / vue3 三选一（判断不了就留空字符串）；\n"
+            "- tech_stack：python / agent / vue3 / database 四选一（判断不了就留空字符串）；\n"
             "- knowledge_point：知识点短语（如 装饰器、响应式原理）。\n\n"
             f"{numbered}\n\n只输出 JSON 数组本身。"
         )},
@@ -230,7 +241,7 @@ async def llm_enrich(items: list[dict[str, Any]]) -> list[dict[str, list[str]]]:
         {"role": "user", "content": (
             "下面是若干面试题（JSON 数组），请为每题补全缺失字段：\n"
             "- answer 为空时：生成标准答案，150~350 字，条理清晰，覆盖核心考点；\n"
-            "- tech_stack 为空时：按内容归入 python / agent / vue3 之一；\n"
+            "- tech_stack 为空时：按内容归入 python / agent / vue3 / database 之一；\n"
             "- knowledge_point 为空时：给一个知识点短语（如 装饰器、GIL、响应式原理）；\n"
             "- 另给出 keywords：3~5 个关键词数组，以及 difficulty：basic / medium / hard。\n"
             "已有字段保持原样不要改写。输出 JSON 数组，每个元素带原 index 与全部字段。\n\n"
@@ -269,7 +280,134 @@ async def llm_enrich(items: list[dict[str, Any]]) -> list[dict[str, list[str]]]:
     return enriched
 
 
+def clean_pdf_text(text: str) -> str:
+    """PDF 提取文本的预处理（简单规则）：清控制字符、页码行与重复页眉页脚。"""
+    # 控制字符（保留 \n \t），pypdf 常带出 \x01 等
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
+    lines = []
+    for line in text.splitlines():
+        s = line.strip()
+        # 纯页码行：如 "12"、"- 12 -"、"第 12 页"
+        if re.fullmatch(r"[-—–\s]*(?:第\s*)?\d{1,4}\s*(?:页)?[-—–\s]*", s):
+            continue
+        lines.append(line)
+    text = "\n".join(lines)
+    # 页眉页脚：重复出现 ≥3 次的相同短行（不以问号结尾，避免误删真问题）
+    counts: dict[str, int] = {}
+    for line in text.splitlines():
+        s = line.strip()
+        if s and len(s) <= 25 and not s.endswith(("?", "？")):
+            counts[s] = counts.get(s, 0) + 1
+    noise = {s for s, c in counts.items() if c >= 3}
+    if noise:
+        text = "\n".join(line for line in text.splitlines() if line.strip() not in noise)
+    return text
+
+
+def _split_for_llm(text: str, max_chars: int = _PDF_CHUNK_CHARS) -> list[str]:
+    """长文本按段落边界切块：累积段落至接近 max_chars 即封块，避免把一道题切两半。
+
+    单段超长时硬切（优先在段内换行处下刀）。
+    """
+    chunks: list[str] = []
+    buf: list[str] = []
+    size = 0
+    for para in re.split(r"\n\s*\n", text):
+        para = para.strip()
+        if not para:
+            continue
+        while len(para) > max_chars:
+            cut = para.rfind("\n", 0, max_chars)
+            if cut < max_chars // 2:
+                cut = max_chars
+            if buf:
+                chunks.append("\n\n".join(buf))
+                buf, size = [], 0
+            chunks.append(para[:cut])
+            para = para[cut:].lstrip()
+        if not para:
+            continue
+        if buf and size + len(para) + 2 > max_chars:
+            chunks.append("\n\n".join(buf))
+            buf, size = [], 0
+        buf.append(para)
+        size += len(para) + 2
+    if buf:
+        chunks.append("\n\n".join(buf))
+    return chunks
+
+
+async def _extract_chunk_with_llm(chunk: str, index: int) -> tuple[list[dict[str, Any]], Optional[str]]:
+    """单块 LLM 提取：返回 (items, error)。JSON 解析失败时要求重出一次。
+
+    LLM 整体不可用抛 LLMProviderUnavailableError，由调用方统一降级。
+    """
+    messages = [
+        {"role": "system", "content": _PDF_EXTRACT_SYSTEM},
+        {"role": "user", "content": (
+            "下面是从面试资料 PDF 中提取的一段原文（第 "
+            f"{index} 块）。请只提取其中**真正的面试题**：\n"
+            "- 只收录有明确问题形态的条目（如「什么是 X」「为什么 Y」「请解释 Z」「X 和 Y 有什么区别」）；\n"
+            "- 忽略章节标题、目录、叙述性正文与铺垫段落，不要把正文段落当成题干；\n"
+            "- 原文自带答案的，用原文答案（可适当整理通顺）；没有答案的 answer 留空字符串；\n"
+            "- tech_stack 四选一：python / agent / vue3 / database"
+            "（数据库、MySQL、索引、事务类归 database；判断不了留空字符串）。\n"
+            "输出 JSON 数组，每个元素字段：stem（完整问句题干）、answer、tech_stack、"
+            "knowledge_point（知识点短语，如 索引、事务隔离级别）、keywords（3~5 个关键词数组）。\n"
+            "没有可提取的题就输出空数组 []。只输出 JSON 数组本身。\n\n"
+            f"【原文】\n{chunk}"
+        )},
+    ]
+    for attempt in (1, 2):
+        _, raw = await llm_router.chat(messages, temperature=0.2)
+        try:
+            items = []
+            for d in _extract_json_array(raw):
+                stem = str(d.get("stem") or "").strip()
+                if not stem:
+                    continue
+                item: dict[str, Any] = {"stem": stem}
+                for field in ("answer", "tech_stack", "knowledge_point"):
+                    value = str(d.get(field) or "").strip()
+                    if value:
+                        item[field] = value
+                keywords = d.get("keywords")
+                if isinstance(keywords, list) and keywords:
+                    item["keywords"] = [str(k) for k in keywords][:6]
+                items.append(item)
+            return items, None
+        except (ValueError, json.JSONDecodeError) as exc:
+            if attempt == 2:
+                return [], f"第 {index} 块 LLM 返回无法解析为 JSON：{exc}"
+            messages.append({"role": "assistant", "content": raw})
+            messages.append({"role": "user", "content": (
+                "上一条回复不是合法 JSON 数组。请重新只输出一个合法 JSON 数组，"
+                "不要输出任何其他文字或 Markdown 代码块。"
+            )})
+    return [], f"第 {index} 块 LLM 提取失败"
+
+
+async def extract_questions_with_llm(text: str) -> tuple[list[dict[str, Any]], list[str]]:
+    """长文本强制 LLM 结构化提取真问题（PDF 导入路径）：
+
+    预处理（控制字符/页眉页脚）→ 按段落边界切块（约 2800 字）→ 每块一次 LLM 调用。
+    单块失败不拖垮整体：记入返回的 errors。LLM 整体不可用抛 LLMProviderUnavailableError。
+
+    返回 (items, errors)：items 可能仍缺 answer / tech_stack，交给后续补全环节。
+    """
+    cleaned = clean_pdf_text(text)
+    items: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for i, chunk in enumerate(_split_for_llm(cleaned), start=1):
+        chunk_items, error = await _extract_chunk_with_llm(chunk, i)
+        items += chunk_items
+        if error:
+            errors.append(error)
+    return items, errors
+
+
 __all__ = [
     "SIMILARITY_THRESHOLD", "ALLOWED_STACKS", "normalize_stack", "stem_similarity",
     "parse_text", "llm_extract", "llm_enrich", "LLMProviderUnavailableError",
+    "clean_pdf_text", "extract_questions_with_llm",
 ]
