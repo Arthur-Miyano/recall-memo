@@ -26,6 +26,8 @@ export const postLlmSettings = (payload) =>
   request('/api/settings/llm', { method: 'POST', body: payload })
 export const assistantChat = (payload) =>
   request('/api/assistant/chat', { method: 'POST', body: payload })
+export const getAssistantHistory = (limit = 50) =>
+  request(`/api/assistant/history?limit=${limit}`)
 
 /* ---------- 会话流程（记忆训练 / 面试 / 回忆） ---------- */
 export const createSession = (mode, stack, count) =>

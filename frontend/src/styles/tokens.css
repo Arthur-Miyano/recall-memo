@@ -10,6 +10,7 @@
   --ink-25:     rgba(25,25,25,.25);
   --ink-12:     rgba(25,25,25,.12);
   --seal:       #C0392B;   /* 印章红：唯一点缀色 */
+  --logic:      #2E4C6D;   /* 低饱和靛蓝：复盘报告"逻辑问题"标注（与印章红遗漏标注区分） */
   /* 字体 */
   --serif: "Noto Serif SC", "Songti SC", "STSong", "SimSun", serif;
   --mono:  "JetBrains Mono", "Sarasa Mono SC", ui-monospace, "Courier New", monospace;

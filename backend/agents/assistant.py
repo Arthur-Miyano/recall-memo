@@ -54,6 +54,8 @@ class AssistantAgent(BaseAgent):
         record.score_naturalness = score.get("naturalness")
         record.score_total = score.get("total")
         record.is_reciting = score.get("is_reciting")
+        # 标注版标准答案（[[omiss]]/[[logic]] 标记），持久化供复盘报告展示；无标注则为 None
+        record.annotated_answer = score.get("annotated_answer")
         # 总分低于阈值标记为需要补答/复习
         record.need_followup = (score.get("total") or 0.0) < SCORE_PASS_THRESHOLD
         db.add(record)
@@ -179,6 +181,11 @@ class AssistantAgent(BaseAgent):
             if question is None:
                 continue
             score = item.get("score")  # 跳过的题无评分
+            # 标注版标准答案：优先取当场评分输出，旧数据回退 records 表持久化列，均无则 None
+            annotated = (score or {}).get("annotated_answer")
+            if annotated is None and item.get("record_id"):
+                rec = db.get(Record, item["record_id"])
+                annotated = rec.annotated_answer if rec else None
             entry: dict[str, Any] = {
                 "question_id": question.id,
                 "stem": question.stem,
@@ -187,6 +194,7 @@ class AssistantAgent(BaseAgent):
                 "skipped": bool(item.get("skipped")),
                 "user_answer": item.get("user_answer", ""),
                 "standard_answer": question.answer,
+                "annotated_answer": annotated,
                 "score": score,
                 "record_id": item.get("record_id"),
             }

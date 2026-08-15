@@ -26,6 +26,8 @@ class Record(SQLModel, table=True):
     score_naturalness: Optional[float] = Field(default=None, description="表达自然度得分")
     score_total: Optional[float] = Field(default=None, description="总分")
     is_reciting: Optional[bool] = Field(default=None, description="是否判定为背诵（反背诵检测）")
+    # 评分 Agent 输出的标注版标准答案（[[omiss]]/[[logic]] 标记，可空）；旧库由 init_db 迁移补列
+    annotated_answer: Optional[str] = Field(default=None, description="标注版标准答案（遗漏/逻辑标记）")
     need_followup: bool = Field(default=False, description="是否需要补答/追问")
     # 面试模式：跳过的题记为失败（总分 0），但不给补答机会
     skipped: bool = Field(default=False, description="是否被跳过（判负，不可补答）")

@@ -1,0 +1,178 @@
+/* ============ 仪表盘放大视图 & 录入题库（DashboardView 专属，不污染 base.css） ============
+   纸墨风格约定：纸面 var(--paper-hi)、墨边框 1px var(--ink)、印章红仅作点缀；
+   动效复用 base.css 的 screenIn（遮罩淡入上移）与 drop（纸面落下）。 */
+
+/* ---- 可点击卡片：本体紧凑样式不变，只加悬停反馈与右下角 mono 提示 ---- */
+.db-panel.db-click { cursor: pointer; position: relative; transition: box-shadow .2s, transform .2s; }
+.db-panel.db-click:hover { box-shadow: 5px 6px 0 rgba(25,25,25,.18); transform: translate(-1px, -1px); }
+.db-panel .zoom-hint {
+  position: absolute; right: 14px; bottom: 10px;
+  font-family: var(--mono); font-size: 10px; letter-spacing: .1em;
+  color: var(--ink-25); transition: color .15s; pointer-events: none;
+}
+.db-panel.db-click:hover .zoom-hint { color: var(--seal); }
+
+/* ---- 放大视图 modal：半透纸色遮罩 + 大纸面 ---- */
+.dm-overlay {
+  position: fixed; inset: 0; z-index: 90;
+  background: rgba(237, 239, 234, .88);          /* 半透纸色 */
+  display: flex; align-items: center; justify-content: center;
+  padding: 4vh 4vw;
+  animation: screenIn .3s var(--ease-out);
+}
+.dm-paper {
+  background: var(--paper-hi); border: 1px solid var(--ink);
+  box-shadow: 9px 12px 0 rgba(25,25,25,.2);       /* 与 .paper.dragging 同语言 */
+  width: min(980px, 100%); max-height: 88vh;
+  display: flex; flex-direction: column;
+  padding: 26px 30px 24px;
+  animation: drop .5s var(--ease-snap) both;
+}
+.dm-head { display: flex; align-items: baseline; gap: 16px; border-bottom: 1px solid var(--ink); padding-bottom: 14px; margin-bottom: 18px; }
+.dm-head h2 { font-family: var(--serif); font-weight: 600; font-size: 24px; flex: 1; }
+.dm-head .fig { font-family: var(--mono); font-size: 11px; color: var(--ink-25); letter-spacing: .12em; }
+.dm-close {
+  font-family: var(--mono); font-size: 14px; line-height: 1;
+  background: none; border: 1px solid var(--ink-45); color: var(--ink-70);
+  width: 30px; height: 30px; cursor: pointer; flex: none;
+  transition: background .15s, color .15s, border-color .15s;
+}
+.dm-close:hover { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.dm-body { overflow-y: auto; flex: 1; min-height: 0; }
+.dm-loading, .dm-empty {
+  font-family: var(--mono); font-size: 12px; color: var(--ink-45);
+  letter-spacing: .08em; padding: 36px 0; text-align: center;
+}
+
+/* ---- 通用明细表（正确率逐题表 / 每日明细共用语言） ---- */
+.dm-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.dm-table th {
+  font-family: var(--mono); font-size: 11px; font-weight: 400; letter-spacing: .1em;
+  color: var(--ink-45); text-align: left; padding: 8px 10px;
+  border-bottom: 1px solid var(--ink);
+}
+.dm-table td { padding: 9px 10px; border-bottom: 1px solid var(--ink-12); vertical-align: baseline; }
+.dm-table td.mono, .dm-table .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.dm-table .dim { color: var(--ink-45); font-size: 12px; }
+/* 状态章：掌握=墨块 / 薄弱=红虚线框 / 未背=灰字 */
+.dm-stamp { font-family: var(--mono); font-size: 11px; letter-spacing: .06em; padding: 2px 8px; }
+.dm-stamp.done { background: var(--ink); color: var(--paper); }
+.dm-stamp.weak { border: 1px dashed var(--seal); color: var(--seal); }
+.dm-stamp.todo { color: var(--ink-45); }
+
+/* ---- 每日背诵记录放大：30 天热力 + 逐日明细 ---- */
+.dm-cal { display: grid; grid-template-columns: repeat(15, 1fr); gap: 4px; margin-bottom: 6px; }
+.dm-cal i { aspect-ratio: 1; background: var(--ink-12); display: block; }
+.dm-cal i.l1 { background: rgba(25,25,25,.3); }
+.dm-cal i.l2 { background: rgba(25,25,25,.55); }
+.dm-cal i.l3 { background: rgba(25,25,25,.8); }
+.dm-cal i.l4 { background: var(--ink); }
+.dm-dayhead {
+  font-family: var(--mono); font-size: 12px; letter-spacing: .1em;
+  border-bottom: 1px solid var(--ink); padding: 14px 0 6px; margin-bottom: 2px;
+  display: flex; justify-content: space-between;
+}
+.dm-dayhead .cnt { color: var(--ink-45); }
+.dm-rec { display: flex; gap: 12px; align-items: baseline; padding: 7px 0; font-size: 13px; border-bottom: 1px dashed var(--ink-12); }
+.dm-rec .t { flex: 1; }
+.dm-rec .mode { font-family: var(--mono); font-size: 11px; color: var(--ink-45); }
+.dm-rec .score { font-family: var(--mono); font-size: 13px; font-weight: 700; min-width: 42px; text-align: right; }
+.dm-rec .score.bad { color: var(--seal); }
+.dm-rec .tag { font-family: var(--mono); font-size: 10px; color: var(--seal); }
+
+/* ---- 30 天趋势放大：双色阶梯折线 ---- */
+.dm-trend-legend { display: flex; gap: 20px; margin-top: 10px; font-family: var(--mono); font-size: 10px; color: var(--ink-45); letter-spacing: .08em; }
+.dm-trend-legend i { width: 16px; height: 0; border-top: 2px solid var(--ink); display: inline-block; vertical-align: middle; margin-right: 6px; }
+.dm-trend-legend i.fail { border-top-color: var(--seal); border-top-style: dashed; }
+
+/* ---- 知识图谱放大：大画布 + 节点详情 ---- */
+.dm-kg text { font-family: var(--mono); fill: var(--ink-70); letter-spacing: .03em; }
+.dm-kg .nd { cursor: pointer; }
+.dm-kg .nd:hover .node-box { outline: 1px solid var(--ink); }
+.dm-kg .lk { stroke: var(--ink-25); stroke-width: 1; }
+.dm-kg .node-mastered { fill: var(--ink); }
+.dm-kg .node-weak { fill: var(--paper-hi); stroke: var(--seal); stroke-width: 1.5; stroke-dasharray: 3 2; }
+.dm-kg .node-todo { fill: var(--ink-12); }
+.dm-kg .node-sel { outline: 2px solid var(--seal); }
+.dm-kg .root { fill: var(--paper-hi); stroke: var(--ink); stroke-width: 1.5; }
+.dm-kg .root-label { font-size: 13px; font-weight: 700; fill: var(--ink); }
+.dm-kg .n-score { font-size: 9px; fill: var(--ink-45); }
+.dm-kg-detail {
+  margin-top: 16px; border: 1px solid var(--ink); background: var(--paper);
+  padding: 18px 20px; animation: screenIn .3s var(--ease-out);
+}
+.dm-kg-detail h3 { font-family: var(--serif); font-weight: 600; font-size: 17px; margin-bottom: 4px; }
+.dm-kg-detail .q-answer {
+  font-size: 13px; line-height: 1.9; color: var(--ink-70);
+  border-left: 3px solid var(--ink-12); padding-left: 12px; margin: 10px 0;
+  white-space: pre-wrap;
+}
+.dm-kg-detail .q-scores { font-family: var(--mono); font-size: 11px; color: var(--ink-45); letter-spacing: .04em; }
+.dm-kg-detail .q-scores b { color: var(--ink); }
+.dm-kg-detail .q-scores b.bad { color: var(--seal); }
+
+/* ---- 今日建议放大：完整清单 + 助手按钮 ---- */
+.dm-suggest { font-size: 14px; }
+.dm-suggest li { list-style: none; display: flex; gap: 12px; align-items: baseline; padding: 9px 0; border-bottom: 1px dashed var(--ink-12); }
+.dm-suggest li .d { font-family: var(--mono); font-size: 11px; color: var(--seal); min-width: 64px; }
+.dm-suggest li .t { flex: 1; }
+.dm-suggest li .t small { display: block; font-size: 12px; color: var(--ink-45); margin-top: 2px; }
+.dm-suggest li .s { font-family: var(--mono); font-size: 12px; color: var(--ink-45); }
+.dm-sec-label {
+  font-family: var(--mono); font-size: 11px; letter-spacing: .12em; color: var(--ink-45);
+  border-bottom: 1px solid var(--ink); padding-bottom: 6px; margin: 20px 0 4px;
+}
+.dm-sec-label:first-child { margin-top: 0; }
+.dm-plan-btn {
+  font-family: var(--mono); font-size: 13px; letter-spacing: .06em;
+  border: 1px solid var(--ink); background: var(--ink); color: var(--paper);
+  padding: 10px 22px; cursor: pointer; margin-top: 20px;
+  transition: background .15s, color .15s;
+}
+.dm-plan-btn:hover:not(:disabled) { background: var(--seal); border-color: var(--seal); }
+.dm-plan-btn:disabled { opacity: .5; cursor: wait; }
+.dm-plan-reply {
+  margin-top: 14px; border: 1px solid var(--ink-12); background: var(--paper);
+  padding: 16px 18px; font-size: 13px; line-height: 1.9; white-space: pre-wrap;
+  animation: screenIn .3s var(--ease-out);
+}
+.dm-plan-reply .who { font-family: var(--mono); font-size: 10px; letter-spacing: .12em; color: var(--seal); display: block; margin-bottom: 8px; }
+
+/* ---- 录入题库面板 ---- */
+.ip-textarea {
+  width: 100%; min-height: 220px; resize: vertical;
+  border: 1px solid var(--ink); background: var(--paper); color: var(--ink);
+  font-family: var(--mono); font-size: 12px; line-height: 1.8;
+  padding: 14px 16px; box-sizing: border-box;
+}
+.ip-textarea:focus { outline: 2px solid var(--ink-45); outline-offset: -1px; }
+.ip-toolbar { display: flex; align-items: center; gap: 18px; margin-top: 14px; flex-wrap: wrap; }
+.ip-file-btn {
+  font-family: var(--mono); font-size: 12px; letter-spacing: .06em;
+  border: 1px solid var(--ink-45); background: none; color: var(--ink-70);
+  padding: 8px 18px; cursor: pointer; transition: border-color .15s, color .15s;
+}
+.ip-file-btn:hover { border-color: var(--ink); color: var(--ink); }
+.ip-dedupe { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; user-select: none; }
+.ip-dedupe input { accent-color: var(--ink); width: 15px; height: 15px; cursor: pointer; }
+.ip-note { font-family: var(--mono); font-size: 10px; color: var(--ink-45); letter-spacing: .06em; flex-basis: 100%; }
+.ip-submit {
+  font-family: var(--mono); font-size: 13px; letter-spacing: .08em;
+  border: 1px solid var(--ink); background: var(--ink); color: var(--paper);
+  padding: 10px 26px; cursor: pointer; margin-left: auto;
+  transition: background .15s, color .15s;
+}
+.ip-submit:hover:not(:disabled) { background: var(--seal); border-color: var(--seal); }
+.ip-submit:disabled { opacity: .5; cursor: wait; }
+/* 结果清单 */
+.ip-result { margin-top: 18px; border-top: 1px solid var(--ink); padding-top: 14px; animation: screenIn .3s var(--ease-out); }
+.ip-result .sum { font-family: var(--mono); font-size: 12px; letter-spacing: .08em; color: var(--ink-70); margin-bottom: 10px; }
+.ip-result ul { font-size: 13px; }
+.ip-result li { list-style: none; display: flex; gap: 10px; align-items: baseline; padding: 6px 0; }
+/* 对勾用墨块字符，不引入新彩色 */
+.ip-result li .mk { font-family: var(--mono); font-size: 11px; min-width: 52px; }
+.ip-result li .mk.ok { color: var(--ink); font-weight: 700; }
+.ip-result li .mk.skip { color: var(--ink-45); }
+.ip-result li .mk.ai { color: var(--seal); }
+.ip-result li .mk.err { color: var(--seal); }
+.ip-result li .why { font-family: var(--mono); font-size: 11px; color: var(--ink-45); }

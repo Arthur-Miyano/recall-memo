@@ -2,12 +2,15 @@
 """智能助理对话接口：水墨螃蟹的问答后端（真实调用 LLM）。
 
 请求：{message} 自由输入，或 {quick: today|recent|all|focus|plan} 快捷指令。
-响应：{thinking: [...], reply: "..."} —— thinking 为 Agent 调用链的逐步描述。
+响应：{thinking: [...], reply: "..."} —— thinking 为 Agent 调用链的逐步描述（带具体数据）。
+持久化：每次问答写入 chat_messages 表（用户消息与助手回复各一条，thinking 存回复那条）；
+GET /history?limit=50 按时间正序返回历史，前端打开面板时拉取渲染。
 """
+import json
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlmodel import Session as DBSession, select
 
@@ -15,7 +18,7 @@ from agents.base import SCORE_PASS_THRESHOLD
 from database import engine
 from llm import llm_router
 from llm.router import LLMProviderUnavailableError
-from models import DailyStat, Question, QuestionFocus, Record, RetryQueueItem
+from models import ChatMessage, DailyStat, Question, QuestionFocus, Record, RetryQueueItem
 
 router = APIRouter(prefix="/assistant", tags=["assistant"])
 
@@ -47,11 +50,9 @@ class ChatRequest(BaseModel):
 
 
 def _collect_profile(db: DBSession) -> tuple[str, list[str]]:
-    """汇总背诵档案为给 LLM 的上下文文本，同时产出 thinking 步骤描述。"""
-    thinking: list[str] = []
+    """汇总背诵档案为给 LLM 的上下文文本，同时产出带具体数据的 thinking 步骤描述。"""
     questions = list(db.exec(select(Question)).all())
     records = list(db.exec(select(Record)).all())
-    thinking.append("智能助理 Agent：查询 records / daily_stats / 待补答队列 …")
 
     today = date.today()
     week_start = datetime.combine(today - timedelta(days=6), time.min, tzinfo=timezone.utc)
@@ -62,6 +63,19 @@ def _collect_profile(db: DBSession) -> tuple[str, list[str]]:
     week_records = [
         r for r in records
         if (r.created_at if r.created_at.tzinfo else r.created_at.replace(tzinfo=timezone.utc)) >= week_start
+    ]
+    # 待补答队列与重点题（提前查出，供 thinking 引用具体题名）
+    queue_items = list(db.exec(select(RetryQueueItem).order_by(RetryQueueItem.created_at)).all())
+    focus_ids = {f.question_id for f in db.exec(select(QuestionFocus)).all()}
+    daily = list(db.exec(select(DailyStat).order_by(DailyStat.date.desc()).limit(7)).all())
+
+    queue_names = [q_map[i.question_id].stem[:16] for i in queue_items if i.question_id in q_map]
+    thinking: list[str] = [
+        f"智能助理 Agent：查询 records —— 累计答题 {len(records)} 条，"
+        f"今天 {len(today_records)} 条，近 7 天 {len(week_records)} 条；"
+        f"题库 {len(questions)} 题，已覆盖 {len(covered)} 题",
+        f"智能助理 Agent：查询待补答队列 —— 共 {len(queue_items)} 题"
+        + (f"（{'、'.join(queue_names[:3])}{'…' if len(queue_names) > 3 else ''}）" if queue_names else "（空）"),
     ]
 
     # 各技术栈正确率
@@ -75,12 +89,19 @@ def _collect_profile(db: DBSession) -> tuple[str, list[str]]:
         e["scores"].append(r.score_total)
         if r.score_total >= SCORE_PASS_THRESHOLD:
             e["passed"] += 1
-    thinking.append(f"智能助理 Agent：聚合 {len(stack_stat)} 个技术栈正确率 …")
-
-    # 待补答队列与重点题
-    queue_items = list(db.exec(select(RetryQueueItem).order_by(RetryQueueItem.created_at)).all())
-    focus_ids = {f.question_id for f in db.exec(select(QuestionFocus)).all()}
-    daily = list(db.exec(select(DailyStat).order_by(DailyStat.date.desc()).limit(7)).all())
+    thinking.append(
+        f"智能助理 Agent：聚合 {len(stack_stat)} 个技术栈正确率 —— "
+        + ("；".join(
+            f"{s} {e['passed'] / e['scored']:.0%}（均分 {sum(e['scores']) / e['scored']:.1f}）"
+            for s, e in stack_stat.items()
+        ) or "暂无已评分记录")
+    )
+    focus_names = [q_map[qid].stem[:16] for qid in focus_ids if qid in q_map]
+    thinking.append(
+        f"智能助理 Agent：读取近 7 天 daily_stats 与圈选重点 —— "
+        f"重点题 {len(focus_names)} 道"
+        + (f"（{'、'.join(focus_names[:3])}{'…' if len(focus_names) > 3 else ''}）" if focus_names else "")
+    )
 
     lines = [
         f"题库总数 {len(questions)} 题，已覆盖 {len(covered)} 题，累计答题 {len(records)} 次。",
@@ -126,5 +147,33 @@ async def assistant_chat(req: ChatRequest, db: DBSession = Depends(get_db)):
         provider, content = await llm_router.chat(messages, temperature=0.5)
     except LLMProviderUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    thinking.append(f"智能助理 Agent：{provider} 模型生成答复 …")
+    thinking.append(f"智能助理 Agent：{provider} 模型生成答复，{len(content)} 字")
+    _save_chat(db, message, content, thinking)
     return {"thinking": thinking, "reply": content}
+
+
+def _save_chat(db: DBSession, question: str, reply: str, thinking: list[str]) -> None:
+    """一问一答落库：用户消息与助手回复各一条，thinking（JSON 字符串）存回复那条。"""
+    db.add(ChatMessage(role="user", content=question))
+    db.add(ChatMessage(role="assistant", content=reply, thinking=json.dumps(thinking, ensure_ascii=False)))
+    db.commit()
+
+
+@router.get("/history")
+def assistant_history(limit: int = Query(default=50, ge=1, le=200), db: DBSession = Depends(get_db)):
+    """对话历史：最近 limit 条，按时间正序返回（前端打开面板时拉取渲染）。"""
+    rows = list(
+        db.exec(select(ChatMessage).order_by(ChatMessage.id.desc()).limit(limit)).all()
+    )
+    return {
+        "messages": [
+            {
+                "id": m.id,
+                "role": m.role,
+                "content": m.content,
+                "thinking": json.loads(m.thinking) if m.thinking else None,
+                "created_at": m.created_at.isoformat(),
+            }
+            for m in reversed(rows)
+        ]
+    }

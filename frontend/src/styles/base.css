@@ -282,6 +282,11 @@ body::before {
 .miss { font-size:13px; line-height:2; }
 .miss li { list-style:none; }
 .miss li::before { content:"×"; font-family: var(--mono); color: var(--seal); margin-right:8px; }
+/* 标准答案内嵌标注（grader 返回的 [[omiss]]/[[logic]] 标记渲染为 mark）：
+   纸墨风——浅色块 + 细下划线，不用高饱和荧光笔 */
+.compare mark { background:transparent; color:inherit; padding:0 1px; }
+.compare mark.mk-omiss { color: var(--seal); background: rgba(192,57,43,.08); border-bottom:1.5px solid var(--seal); }
+.compare mark.mk-logic { color: var(--logic); background: rgba(46,76,109,.08); border-bottom:1.5px dashed var(--logic); }
 .paper .stamp { position:absolute; top:64px; right:22px; font-size:15px; }
 /* 薄弱点分析 */
 .weak-list { columns:2; column-gap:40px; font-size:14px; line-height:2; }
@@ -406,10 +411,13 @@ body::before {
 }
 .crab:hover .crab-tip { opacity:1; }
 
-/* 对话面板 */
+/* 对话面板：resize:both 允许拖拽右下角手柄调整宽高，overflow:hidden 使手柄生效；
+   实际宽高由 InkCrab.vue 内联 style 控制（localStorage 记忆），此处只约束范围 */
 .chat-panel {
   position:fixed; left:28px; top:170px; z-index:calc(var(--z-nav) + 1);
-  width:380px; max-height:min(70vh, 620px); display:none; flex-direction:column;
+  width:380px; height:460px; display:none; flex-direction:column;
+  min-width:320px; min-height:360px; max-width:90vw; max-height:85vh;
+  resize:both; overflow:hidden;
   background: var(--paper-hi); border:1px solid var(--ink);
   box-shadow: 6px 8px 0 rgba(25,25,25,.16);
 }
@@ -462,6 +470,8 @@ body::before {
 
 /* ============ 屏幕：题库总览 ============ */
 .bank-wrap { max-width:1100px; margin:0 auto; }
+.bank-tabs { margin:-14px 0 26px; }
+.bank-tabs .opt { font-family: var(--mono); font-size:11px; letter-spacing:.08em; padding:5px 16px; }
 .bank-progress { display:flex; align-items:center; gap:18px; margin-bottom:36px; }
 .bank-progress .track { flex:1; height:14px; border:1px solid var(--ink); position:relative; }
 .bank-progress .track i { position:absolute; inset:0 auto 0 0; width:43%; background: var(--ink); }

@@ -1,6 +1,8 @@
 <script setup>
 // 屏幕三：终局复盘报告
-// 职责：纸张式复盘（单题对照/维度分/遗漏点、薄弱点分析、错题去向），纸张可拖拽
+// 职责：纸张式复盘（单题对照/维度分/遗漏点、薄弱点分析、错题去向），纸张可拖拽；
+//       标准答案支持内嵌标注：grader 返回 annotated_answer（[[omiss]] 遗漏 / [[logic]] 逻辑标记），
+//       解析为 <mark> 着色（印章红=遗漏、靛蓝=逻辑），无标注的旧数据按原文纯文本展示
 // 数据流（真实接口，失败回退 mock/review.js 并 console.warn）：
 //   GET /api/sessions/{id}/review   —— 面试结束跳来时按 session_id 取报告
 //   GET /api/sessions/latest-review —— 直接进入本页时取最近一次面试的报告
@@ -32,6 +34,23 @@ function shortStem(s) {
   return t.length <= 14 ? t : t.slice(0, 13) + '…'
 }
 
+// 解析标注版标准答案（grader 输出的 [[omiss]]…[[/omiss]] / [[logic]]…[[/logic]] 标记）
+// → 片段数组 [{ text, kind: null|'omiss'|'logic' }]，模板渲染为 <mark> 着色；无标注返回 null
+function parseAnnotated(annotated) {
+  if (!annotated) return null
+  const segs = []
+  const re = /\[\[(omiss|logic)\]\]|\[\[\/(?:omiss|logic)\]\]/g
+  let last = 0, kind = null, m
+  while ((m = re.exec(annotated)) !== null) {
+    if (m.index > last) segs.push({ text: annotated.slice(last, m.index), kind })
+    if (m[1]) kind = m[1]        // 开标记：进入标注区
+    else kind = null             // 闭标记：回到普通文本
+    last = m.index + m[0].length
+  }
+  if (last < annotated.length) segs.push({ text: annotated.slice(last), kind: null })
+  return segs.length ? segs : null
+}
+
 // 真实报告 JSON → 纸张结构
 function toPapers(report) {
   const out = report.per_question.map((q, i) => ({
@@ -47,6 +66,8 @@ function toPapers(report) {
     ] : null,
     yourAnswer: q.skipped ? '（跳过未作答）' : q.user_answer,
     stdAnswer: q.standard_answer,
+    // 标注版标准答案片段（红=遗漏 / 靛蓝=逻辑），旧数据无标注时为 null，按原文纯文本展示
+    stdSegments: parseAnnotated(q.annotated_answer),
     misses: q.score?.missed_points?.length ? q.score.missed_points.map(p => `遗漏：${p}`) : null,
   }))
   const a = report.analysis || {}
@@ -155,7 +176,10 @@ function cells(v) { return Math.floor(v / 10) }
           </div>
           <div class="compare">
             <div><span class="lbl">你的回答</span>{{ p.yourAnswer }}</div>
-            <div><span class="lbl">标准答案</span>{{ p.stdAnswer }}</div>
+            <div>
+              <span class="lbl">标准答案</span>
+              <template v-if="p.stdSegments"><template v-for="(s, si) in p.stdSegments" :key="si"><mark v-if="s.kind" :class="'mk-' + s.kind">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template></template><template v-else>{{ p.stdAnswer }}</template>
+            </div>
           </div>
           <ul class="miss" style="margin-top:14px" v-if="p.misses">
             <li v-for="mm in p.misses" :key="mm">{{ mm }}</li>

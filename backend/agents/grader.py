@@ -4,7 +4,7 @@ import json
 import logging
 import re
 from difflib import SequenceMatcher
-from typing import Any
+from typing import Any, Optional
 
 from models import Question
 
@@ -71,9 +71,14 @@ class GraderAgent(BaseAgent):
             f"3. naturalness：表达自然度。{naturalness_rule}\n"
             "另外给出：\n"
             '- missed_points：遗漏的关键点列表（字符串数组，无遗漏则为空数组）；\n'
-            '- comment：100 字以内的定性点评。\n\n'
+            '- comment：100 字以内的定性点评；\n'
+            "- annotated_answer：标注版标准答案。把上面的【标准答案】原文逐字复制，仅插入以下两种标记，"
+            "不得增删改任何其他文字、标点或换行：\n"
+            "  · 标准答案中有、但用户回答没覆盖到的要点片段，用 [[omiss]]…[[/omiss]] 包裹；\n"
+            "  · 与用户回答中逻辑错误/混乱相对应的正确论述片段，用 [[logic]]…[[/logic]] 包裹。\n"
+            "  标记必须精确包裹最小相关片段（一个词组或一句话），其余原文逐字不变，标记必须成对闭合。\n\n"
             '输出格式：{"accuracy": 数字, "logic": 数字, "naturalness": 数字, '
-            '"missed_points": ["..."], "comment": "..."}'
+            '"missed_points": ["..."], "comment": "...", "annotated_answer": "..."}'
         )
         messages = [
             {"role": "system", "content": _SCORE_SYSTEM_PROMPT},
@@ -105,7 +110,43 @@ class GraderAgent(BaseAgent):
             "similarity": round(ratio, 4),
             "missed_points": [str(p) for p in missed],
             "comment": str(parsed.get("comment", "")),
+            # 标注版标准答案：校验标记配对与原文一致后才采用，否则降级 None（前端不标注）
+            "annotated_answer": self._validate_annotated(parsed.get("annotated_answer"), question.answer),
         }
+
+    # 标注标记：[[omiss]]…[[/omiss]] 遗漏要点、[[logic]]…[[/logic]] 逻辑问题对应片段
+    _ANNOT_MARKERS = ("omiss", "logic")
+
+    @classmethod
+    def _validate_annotated(cls, annotated: Any, standard_answer: str) -> Optional[str]:
+        """校验标注版答案：去掉标记后必须与标准答案逐字一致，且标记成对、嵌套正确。
+
+        LLM 没返回、改动了原文或标记未闭合时降级为 None 并记日志（前端按无标注展示）。
+        """
+        if not isinstance(annotated, str) or not annotated.strip():
+            return None
+        text = annotated
+        for tag in cls._ANNOT_MARKERS:
+            text = text.replace(f"[[{tag}]]", "").replace(f"[[/{tag}]]", "")
+        if text != standard_answer:
+            logger.warning("标注版答案去掉标记后与原文不一致，丢弃标注（题干预览：%s）", standard_answer[:30])
+            return None
+        # 配对与嵌套校验：扫描标记序列，开闭必须一一对应且不交叉
+        stack: list[str] = []
+        for m in re.finditer(r"\[\[(/?)(omiss|logic)\]\]", annotated):
+            closing, tag = m.groups()
+            if not closing:
+                stack.append(tag)
+            elif not stack or stack.pop() != tag:
+                logger.warning("标注标记未配对/交叉，丢弃标注（题干预览：%s）", standard_answer[:30])
+                return None
+        if stack:
+            logger.warning("标注标记未闭合，丢弃标注（题干预览：%s）", standard_answer[:30])
+            return None
+        # 没有任何标记等同没标注，按 None 处理
+        if "[[omiss]]" not in annotated and "[[logic]]" not in annotated:
+            return None
+        return annotated
 
     @staticmethod
     def _parse_json(content: str) -> dict[str, Any]:

@@ -1,16 +1,29 @@
 <script setup>
 // 屏幕四：仪表盘（背诵档案台）
-// 职责：日历热力 / 7 天趋势阶梯折线 / 各栈正确率像素柱 / 知识图谱 / 今日建议 / 模型密钥设置
+// 职责：日历热力 / 7 天趋势阶梯折线 / 各栈正确率像素柱 / 知识图谱 / 今日建议 / 录入题库 / 模型密钥设置
 // 数据流（真实接口，任一失败回退 mock/dashboard.js 并 console.warn）：
 //   GET /api/stats/overview     —— 各栈正确率、覆盖度
 //   GET /api/stats/daily?days=N —— 日历热力（28 天）与 7 天趋势、连续打卡
 //   GET /api/bank/overview      —— 知识图谱节点状态 + 今日建议
+// 放大视图（点击卡片打开纸张 modal，数据流见 api/bank.js）：
+//   每日记录 → /api/stats/daily-detail?days=30（逐日明细）+ /api/stats/daily?days=30（30 天热力）
+//   趋势     → /api/stats/daily?days=30（成功/失败双色阶梯折线）
+//   正确率   → /api/stats/per-question（逐题明细表）
+//   图谱     → /api/bank/overview + /api/stats/per-question（大画布，节点点击看题干/答案/得分记录）
+//   建议     → /api/stats/per-question + /api/sessions/retry-queue + POST /api/assistant/chat {quick:plan}
+// 录入题库：ImportPanel → POST /api/bank/import，入库成功后重拉卡片数据
 // 图表说明：折线与知识图谱为手绘 SVG（图纸感直角转折、像素方块节点），
 //   有意不用 ECharts —— 像素美学是设计的一部分
 import { ref, computed, onMounted } from 'vue'
 import SettingsPanel from '../components/SettingsPanel.vue'
+import DashboardModal from '../components/DashboardModal.vue'
+import ImportPanel from '../components/ImportPanel.vue'
 import { dashboard as mockDb } from '../mock/dashboard'
 import { getStatsOverview, getStatsDaily, getBankOverview } from '../api'
+import {
+  getStatsDailyDetail, getStatsPerQuestion, getRetryQueue, postAssistantPlan,
+} from '../api/bank'
+import '../styles/dashboard.css'
 
 // 整体数据：先渲染 mock 骨架，真实数据到位后逐块替换
 const db = ref(mockDb)
@@ -21,7 +34,8 @@ const ROOT_POS = [{ x: 80, y: 70 }, { x: 320, y: 70 }, { x: 200, y: 260 }, { x: 
 // cell.status → 图谱节点状态
 const CELL2NODE = { done: 'mastered', weak: 'weak', todo: 'todo' }
 
-onMounted(async () => {
+// 卡片数据加载（首屏 + 录入成功后刷新共用）
+async function loadDashboard() {
   try {
     const [ov, daily28, daily7, bank] = await Promise.all([
       getStatsOverview(), getStatsDaily(28), getStatsDaily(7), getBankOverview(),
@@ -32,7 +46,7 @@ onMounted(async () => {
       if (daily7.items[i].total_count > 0) streak++
       else break
     }
-    const next = {
+    db.value = {
       headMeta: [
         `已覆盖 ${ov.covered} / ${ov.total_questions} 题 · 连续打卡 ${streak} 天`,
         `数据截至 ${new Date().toLocaleDateString('zh-CN')}`,
@@ -52,11 +66,11 @@ onMounted(async () => {
       suggestions: buildSuggestions(bank),
       settings: mockDb.settings, // 设置面板自行请求真实接口，这里仅占位
     }
-    db.value = next
   } catch (e) {
     console.warn('[dashboard] 统计数据获取失败，回退 mock 数据：', e.message)
   }
-})
+}
+onMounted(loadDashboard)
 
 // 知识图谱：技术栈根节点 + 每题一个子节点（围绕根节点扇形排布）
 function buildGraph(bank) {
@@ -125,6 +139,156 @@ const kgNodes = computed(() => {
 })
 // 正确率像素柱：pct → 10 格
 function accCells(p) { return Math.round(p / 10) }
+
+/* ==================== 放大视图 ==================== */
+// modalKey：'' | calendar | trend | accuracy | graph | suggest
+const modalKey = ref('')
+const modalData = ref(null)   // 当前放大视图的数据载荷（按 key 结构不同）
+const modalLoading = ref(false)
+const showImport = ref(false)
+
+const MODAL_META = {
+  calendar: { title: '每日背诵记录 · 近 30 天', fig: 'FIG.04-A+' },
+  trend: { title: '答题趋势 · 近 30 天', fig: 'FIG.04-B+' },
+  accuracy: { title: '逐题明细 · 各技术栈正确率', fig: 'FIG.04-C+' },
+  graph: { title: '知识图谱 · 全题状态', fig: 'FIG.04-D+' },
+  suggest: { title: '今日建议背诵 · 完整清单', fig: 'FIG.04-E+' },
+}
+const modalMeta = computed(() => MODAL_META[modalKey.value] || { title: '', fig: '' })
+
+// 打开放大视图：按卡片类型拉取对应数据，失败 console.warn + 空态（不白屏）
+async function openModal(key) {
+  modalKey.value = key
+  modalData.value = null
+  modalLoading.value = true
+  kgSelected.value = null
+  planReply.value = ''
+  try {
+    if (key === 'calendar') {
+      const [detail, daily] = await Promise.all([getStatsDailyDetail(30), getStatsDaily(30)])
+      modalData.value = { detail, daily }
+    } else if (key === 'trend') {
+      modalData.value = { daily: await getStatsDaily(30) }
+    } else if (key === 'accuracy') {
+      modalData.value = { perQ: await getStatsPerQuestion() }
+    } else if (key === 'graph') {
+      const [bank, perQ] = await Promise.all([getBankOverview(), getStatsPerQuestion()])
+      modalData.value = { bank, perQMap: Object.fromEntries(perQ.items.map(q => [q.question_id, q])) }
+    } else if (key === 'suggest') {
+      const [perQ, retry] = await Promise.all([getStatsPerQuestion(), getRetryQueue()])
+      modalData.value = { perQ, retry }
+    }
+  } catch (e) {
+    console.warn(`[dashboard] 放大视图数据获取失败（${key}）：`, e.message)
+  } finally {
+    modalLoading.value = false
+  }
+}
+function closeModal() { modalKey.value = ''; modalData.value = null }
+
+// ---- 放大 · 每日背诵记录：30 天热力等级（复用 daily.total_count → 0~4 级） ----
+const cal30Levels = computed(() =>
+  (modalData.value?.daily.items || []).map(d => Math.min(d.total_count, 4))
+)
+
+// ---- 放大 · 30 天趋势：成功（墨实线）/ 失败（红虚线）双色阶梯折线 ----
+const TW = 920, TH = 220, tpad = 30
+const tpx = i => tpad + i * (TW - tpad * 2) / 29
+const trend30Max = computed(() => {
+  const items = modalData.value?.daily.items || []
+  return Math.max(...items.map(d => Math.max(d.success_count, d.fail_count)), 1)
+})
+const tpy = v => TH - tpad - v * (TH - tpad * 2) / trend30Max.value
+function stepPath(vals) {
+  if (!vals.length) return ''
+  let d = `M ${tpx(0)} ${tpy(vals[0])}`
+  for (let i = 1; i < vals.length; i++) d += ` H ${tpx(i)} V ${tpy(vals[i])}`
+  return d
+}
+const okPath = computed(() => stepPath((modalData.value?.daily.items || []).map(d => d.success_count)))
+const failPath = computed(() => stepPath((modalData.value?.daily.items || []).map(d => d.fail_count)))
+const trend30Grid = computed(() => Array.from({ length: trend30Max.value + 1 }, (_, g) => g))
+
+// ---- 放大 · 正确率：逐题明细按技术栈分组排序，未背的排最后 ----
+const STATUS_ORDER = { weak: 0, done: 1, todo: 2 }
+const perQRows = computed(() => {
+  const items = [...(modalData.value?.perQ.items || [])]
+  return items.sort((a, b) =>
+    a.tech_stack.localeCompare(b.tech_stack) || STATUS_ORDER[a.status] - STATUS_ORDER[b.status]
+  )
+})
+const STATUS_CN = { done: '掌握', weak: '薄弱', todo: '未背' }
+
+// ---- 放大 · 知识图谱：大画布，每栈一列，节点带题名与最近得分，点击看详情 ----
+const kgSelected = ref(null) // 选中的 per-question 条目
+const kgBig = computed(() => {
+  const bank = modalData.value?.bank
+  const perQMap = modalData.value?.perQMap || {}
+  if (!bank) return { roots: [], kids: [], edges: [], boxH: 300 }
+  const roots = []
+  const kids = []
+  const edges = []
+  const n = Math.max(bank.stacks.length, 1)
+  let boxH = 300
+  bank.stacks.forEach((stack, si) => {
+    const cx = 920 * (si + 0.5) / n  // 列中心
+    roots.push({ x: cx, y: 44, label: stack.name.toUpperCase() })
+    let i = 0
+    stack.groups.forEach(g => g.cells.forEach(c => {
+      const perQ = perQMap[c.question_id]
+      const kid = {
+        qid: c.question_id,
+        x: cx - 80, y: 104 + i * 40,
+        title: perQ ? perQ.stem.slice(0, 12) : c.label,
+        score: perQ && perQ.latest_score != null ? `${Math.round(perQ.latest_score)}分` : '未背',
+        s: CELL2NODE[c.status] || 'todo',
+      }
+      kids.push(kid)
+      edges.push({ x1: cx, y1: 44, x2: kid.x, y2: kid.y })
+      i++
+    }))
+    boxH = Math.max(boxH, 104 + i * 40 + 16)
+  })
+  return { roots, kids, edges, boxH }
+})
+function pickNode(kid) {
+  kgSelected.value = modalData.value?.perQMap?.[kid.qid] || null
+}
+
+// ---- 放大 · 今日建议：全部薄弱题（按分升序）+ 待补答队列，各附一句理由 ----
+const suggestWeak = computed(() => {
+  const retryIds = new Set((modalData.value?.retry.items || []).map(r => r.question_id))
+  return (modalData.value?.perQ.items || [])
+    .filter(q => q.status === 'weak')
+    .sort((a, b) => (a.latest_score ?? 0) - (b.latest_score ?? 0))
+    .map(q => ({
+      ...q,
+      reason: `最新得分 ${Math.round(q.latest_score)} 分，低于及格线 60`
+        + (retryIds.has(q.question_id) ? '，在待补答队列中' : '，建议优先重背'),
+    }))
+})
+const suggestRetry = computed(() => modalData.value?.retry.items || [])
+
+// 「问问助手怎么安排」：POST /api/assistant/chat {quick:plan}，加载中有状态
+const planLoading = ref(false)
+const planReply = ref('')
+async function askPlan() {
+  if (planLoading.value) return
+  planLoading.value = true
+  planReply.value = ''
+  try {
+    const resp = await postAssistantPlan()
+    planReply.value = resp.reply
+  } catch (e) {
+    console.warn('[dashboard] 助手计划获取失败：', e.message)
+    planReply.value = `助手暂时 unavailable：${e.message}`
+  } finally {
+    planLoading.value = false
+  }
+}
+
+// 录入完成（有题入库）：重拉卡片数据，让覆盖数/图谱/建议立即更新
+function onImported() { loadDashboard() }
 </script>
 
 <template>
@@ -141,15 +305,16 @@ function accCells(p) { return Math.round(p / 10) }
     <div class="db-grid">
       <div style="display:flex;flex-direction:column;gap:28px">
         <!-- 日历热力格 -->
-        <div class="db-panel">
+        <div class="db-panel db-click" @click="openModal('calendar')">
           <h2>每日背诵记录 <span class="n">FIG.04-A</span></h2>
           <div class="cal">
             <i v-for="(v, i) in db.calendar" :key="i" :class="v ? 'l' + v : ''"></i>
           </div>
           <div class="cal-legend">少 <i style="background:var(--ink-12)"></i><i style="background:rgba(25,25,25,.55)"></i><i style="background:var(--ink)"></i> 多</div>
+          <span class="zoom-hint">点击放大 ▸</span>
         </div>
         <!-- 近 7 天答题趋势：阶梯折线 -->
-        <div class="db-panel">
+        <div class="db-panel db-click" @click="openModal('trend')">
           <h2>近 7 天答题趋势 <span class="n">FIG.04-B</span></h2>
           <svg class="chart-line" viewBox="0 0 560 160">
             <!-- 坐标格横线 + Y 轴刻度 -->
@@ -174,9 +339,10 @@ function accCells(p) { return Math.round(p / 10) }
               <text :x="px(i)" :y="py(v) - 12" text-anchor="middle" font-family="var(--mono)" font-size="10" fill="var(--ink)">{{ v }}</text>
             </template>
           </svg>
+          <span class="zoom-hint">点击放大 ▸</span>
         </div>
         <!-- 各技术栈正确率：像素柱 -->
-        <div class="db-panel">
+        <div class="db-panel db-click" @click="openModal('accuracy')">
           <h2>各技术栈正确率 <span class="n">FIG.04-C</span></h2>
           <div class="acc-row" v-for="a in db.accuracy" :key="a.name">
             <span class="name">{{ a.name }}</span>
@@ -185,6 +351,7 @@ function accCells(p) { return Math.round(p / 10) }
             </div>
             <span class="pct">{{ a.pct }}%</span>
           </div>
+          <span class="zoom-hint">点击放大 ▸</span>
         </div>
         <!-- 模型与密钥配置 -->
         <SettingsPanel />
@@ -192,7 +359,7 @@ function accCells(p) { return Math.round(p / 10) }
 
       <div style="display:flex;flex-direction:column;gap:28px">
         <!-- 知识图谱 -->
-        <div class="db-panel">
+        <div class="db-panel db-click" @click="openModal('graph')">
           <h2>知识图谱 <span class="n">FIG.04-D</span></h2>
           <svg class="kg" viewBox="0 0 440 320">
             <!-- 根-子连线 -->
@@ -216,9 +383,10 @@ function accCells(p) { return Math.round(p / 10) }
             <span><i style="border:1.5px dashed var(--seal)"></i>薄弱</span>
             <span><i style="background:var(--ink-12)"></i>未覆盖</span>
           </div>
+          <span class="zoom-hint">点击放大 ▸</span>
         </div>
         <!-- 今日建议背诵 -->
-        <div class="db-panel">
+        <div class="db-panel db-click" @click="openModal('suggest')">
           <h2>今日建议背诵 <span class="n">FIG.04-E</span></h2>
           <ul class="suggest">
             <li v-for="(sg, i) in db.suggestions" :key="i">
@@ -226,8 +394,178 @@ function accCells(p) { return Math.round(p / 10) }
             </li>
             <li v-if="!db.suggestions.length"><span class="d">OK</span><span class="t">暂无薄弱题，保持节奏</span><span class="s">—</span></li>
           </ul>
+          <span class="zoom-hint">点击放大 ▸</span>
+        </div>
+        <!-- 录入题库入口 -->
+        <div class="db-panel db-click" @click="showImport = true">
+          <h2>录入题库 <span class="n">IMPORT</span></h2>
+          <ul class="suggest">
+            <li><span class="d">NEW</span><span class="t">粘贴题目文本或选择文件，自动清洗去重、AI 补全答案与分类</span><span class="s">▸</span></li>
+          </ul>
+          <span class="zoom-hint">点击打开 ▸</span>
         </div>
       </div>
     </div>
+
+    <!-- 放大视图 modal -->
+    <DashboardModal v-if="modalKey" :title="modalMeta.title" :fig="modalMeta.fig" @close="closeModal">
+      <div v-if="modalLoading" class="dm-loading">数据铺陈中 …</div>
+      <div v-else-if="!modalData" class="dm-empty">数据暂未备好（接口异常详见控制台）</div>
+
+      <template v-else>
+        <!-- 放大 · 每日背诵记录：30 天热力 + 逐日明细 -->
+        <template v-if="modalKey === 'calendar'">
+          <div class="dm-cal">
+            <i v-for="(v, i) in cal30Levels" :key="i" :class="v ? 'l' + v : ''"
+               :title="modalData.daily.items[i].date + ' · ' + modalData.daily.items[i].total_count + ' 题'"></i>
+          </div>
+          <div class="cal-legend" style="margin-bottom:8px">少 <i style="background:var(--ink-12)"></i><i style="background:rgba(25,25,25,.55)"></i><i style="background:var(--ink)"></i> 多（悬停格子看日期与题数）</div>
+          <div v-if="!modalData.detail.items.length" class="dm-empty">近 30 天暂无答题记录</div>
+          <div v-for="day in modalData.detail.items" :key="day.date">
+            <div class="dm-dayhead"><span>{{ day.date }}</span><span class="cnt">{{ day.records.length }} 题</span></div>
+            <div class="dm-rec" v-for="(r, i) in day.records" :key="i">
+              <span class="mode">{{ r.mode }}</span>
+              <span class="t">{{ r.title }}</span>
+              <span v-if="r.is_retry" class="tag">补答</span>
+              <span v-if="r.skipped" class="tag">跳过</span>
+              <span class="score" :class="{ bad: r.score != null && r.score < 60 }">
+                {{ r.score == null ? '—' : Math.round(r.score) }}
+              </span>
+            </div>
+          </div>
+        </template>
+
+        <!-- 放大 · 30 天趋势：成功/失败双色阶梯折线 -->
+        <template v-else-if="modalKey === 'trend'">
+          <svg class="chart-line" :viewBox="`0 0 ${TW} ${TH}`" style="width:100%;height:auto">
+            <template v-for="g in trend30Grid" :key="'g' + g">
+              <line
+                :x1="tpad" :y1="tpy(g)" :x2="TW - tpad" :y2="tpy(g)"
+                stroke="rgba(25,25,25,.12)" stroke-width="1"
+                :stroke-dasharray="g ? '2 4' : undefined"
+              />
+              <text :x="tpad - 8" :y="tpy(g) + 4" text-anchor="end" font-family="var(--mono)" font-size="9" fill="rgba(25,25,25,.45)">{{ g }}</text>
+            </template>
+            <!-- X 轴：每 5 天一个 MM-DD 标签 -->
+            <text
+              v-for="(d, i) in modalData.daily.items" :key="'d' + i"
+              v-show="i % 5 === 0 || i === modalData.daily.items.length - 1"
+              :x="tpx(i)" :y="TH - 8" text-anchor="middle"
+              font-family="var(--mono)" font-size="9" fill="rgba(25,25,25,.45)"
+            >{{ d.date.slice(5) }}</text>
+            <!-- 失败：印章红虚线阶梯 -->
+            <path :d="failPath" fill="none" stroke="var(--seal)" stroke-width="1.5" stroke-dasharray="4 3" />
+            <!-- 成功：墨色实线阶梯 + 像素方块数据点 -->
+            <path :d="okPath" fill="none" stroke="var(--ink)" stroke-width="2" />
+            <template v-for="(d, i) in modalData.daily.items" :key="'p' + i">
+              <rect v-if="d.success_count" :x="tpx(i) - 3.5" :y="tpy(d.success_count) - 3.5" width="7" height="7" fill="var(--paper-hi)" stroke="var(--ink)" stroke-width="1.2" />
+              <rect v-if="d.fail_count" :x="tpx(i) - 3" :y="tpy(d.fail_count) - 3" width="6" height="6" fill="var(--paper-hi)" stroke="var(--seal)" stroke-width="1" />
+            </template>
+          </svg>
+          <div class="dm-trend-legend">
+            <span><i></i>成功（得分 ≥60）</span>
+            <span><i class="fail"></i>失败 / 跳过</span>
+          </div>
+        </template>
+
+        <!-- 放大 · 逐题明细表 -->
+        <template v-else-if="modalKey === 'accuracy'">
+          <table class="dm-table">
+            <thead>
+              <tr><th>题目</th><th>技术栈</th><th>知识点</th><th>最近得分</th><th>次数</th><th>状态</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="q in perQRows" :key="q.question_id">
+                <td>{{ q.stem.length > 26 ? q.stem.slice(0, 25) + '…' : q.stem }}</td>
+                <td class="mono dim">{{ q.tech_stack.toUpperCase() }}</td>
+                <td class="dim">{{ q.group }}</td>
+                <td class="mono">{{ q.latest_score == null ? '—' : Math.round(q.latest_score) }}</td>
+                <td class="mono">{{ q.attempts }}</td>
+                <td><span class="dm-stamp" :class="q.status">{{ STATUS_CN[q.status] }}</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </template>
+
+        <!-- 放大 · 知识图谱：大画布 + 节点详情 -->
+        <template v-else-if="modalKey === 'graph'">
+          <svg class="dm-kg" :viewBox="`0 0 920 ${kgBig.boxH}`" style="width:100%;height:auto">
+            <line
+              v-for="(e, i) in kgBig.edges" :key="'e' + i"
+              class="lk" :x1="e.x1" :y1="e.y1" :x2="e.x2" :y2="e.y2"
+            />
+            <template v-for="k in kgBig.kids" :key="'n' + k.qid">
+              <g class="nd" @click.stop="pickNode(k)">
+                <rect
+                  class="node-box" :class="['node-' + k.s, { 'node-sel': kgSelected && kgSelected.question_id === k.qid }]"
+                  :x="k.x - 7" :y="k.y - 7" width="14" height="14"
+                />
+                <text :x="k.x + 14" :y="k.y - 1" font-size="11">{{ k.title }}</text>
+                <text class="n-score" :x="k.x + 14" :y="k.y + 12">{{ k.score }}</text>
+              </g>
+            </template>
+            <template v-for="r in kgBig.roots" :key="'r' + r.label">
+              <rect class="root" :x="r.x - 12" :y="r.y - 12" width="24" height="24" />
+              <text class="root-label" :x="r.x" :y="r.y - 22" text-anchor="middle">{{ r.label }}</text>
+            </template>
+          </svg>
+          <div class="kg-legend">
+            <span><i style="background:var(--ink)"></i>掌握</span>
+            <span><i style="border:1.5px dashed var(--seal)"></i>薄弱</span>
+            <span><i style="background:var(--ink-12)"></i>未覆盖</span>
+            <span style="margin-left:auto">点击节点看题目详情</span>
+          </div>
+          <!-- 节点详情：题干 + 答案 + 得分记录 -->
+          <div v-if="kgSelected" class="dm-kg-detail">
+            <h3>{{ kgSelected.stem }}</h3>
+            <div class="q-scores">
+              {{ kgSelected.tech_stack.toUpperCase() }} · {{ kgSelected.group }} ·
+              <span class="dm-stamp" :class="kgSelected.status">{{ STATUS_CN[kgSelected.status] }}</span>
+            </div>
+            <div class="q-answer">{{ kgSelected.answer }}</div>
+            <div class="q-scores">
+              得分记录：
+              <template v-if="kgSelected.recent_scores.length">
+                <template v-for="(s, i) in kgSelected.recent_scores" :key="i">
+                  {{ s.date }} <b :class="{ bad: s.score < 60 }">{{ Math.round(s.score) }}</b>{{ i < kgSelected.recent_scores.length - 1 ? ' · ' : '' }}
+                </template>
+              </template>
+              <template v-else>暂无（尚未作答）</template>
+            </div>
+          </div>
+        </template>
+
+        <!-- 放大 · 今日建议：完整清单 + 助手安排 -->
+        <template v-else-if="modalKey === 'suggest'">
+          <div class="dm-sec-label">薄弱题（按得分升序，越低越优先）</div>
+          <ul class="dm-suggest">
+            <li v-for="q in suggestWeak" :key="q.question_id">
+              <span class="d">{{ Math.round(q.latest_score) }} 分</span>
+              <span class="t">{{ q.stem }}<small>{{ q.reason }}</small></span>
+              <span class="s">{{ q.tech_stack.toUpperCase() }}</span>
+            </li>
+            <li v-if="!suggestWeak.length"><span class="d">OK</span><span class="t">暂无薄弱题<small>所有答过的题都已及格，保持节奏</small></span><span class="s">—</span></li>
+          </ul>
+          <div class="dm-sec-label">待补答队列</div>
+          <ul class="dm-suggest">
+            <li v-for="(r, i) in suggestRetry" :key="'rq' + i">
+              <span class="d">待补答</span>
+              <span class="t">{{ r.stem }}<small>考核未通过，已入待补答队列，记忆训练中优先重背</small></span>
+              <span class="s">{{ (r.tech_stack || '').toUpperCase() }}</span>
+            </li>
+            <li v-if="!suggestRetry.length"><span class="d">OK</span><span class="t">队列为空<small>没有待补答的题</small></span><span class="s">—</span></li>
+          </ul>
+          <button class="dm-plan-btn" :disabled="planLoading" @click="askPlan">
+            {{ planLoading ? '助手筹划中 …' : '问问助手怎么安排' }}
+          </button>
+          <div v-if="planReply" class="dm-plan-reply">
+            <span class="who">智能助理 · 复习计划</span>{{ planReply }}
+          </div>
+        </template>
+      </template>
+    </DashboardModal>
+
+    <!-- 录入题库 -->
+    <ImportPanel v-if="showImport" @close="showImport = false" @done="onImported" />
   </section>
 </template>

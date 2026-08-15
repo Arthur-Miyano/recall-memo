@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
-"""题库总览接口：技术栈 → 知识点两级分组 + 背诵状态格 + 圈选重点背诵。"""
+"""题库总览接口：技术栈 → 知识点两级分组 + 背诵状态格 + 圈选重点背诵 + 录入题库。"""
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlmodel import Session as DBSession, select
 
+from agents import importer
 from agents.base import SCORE_PASS_THRESHOLD
 from database import engine
 from models import Question, QuestionFocus, Record, RetryQueueItem
@@ -127,3 +128,114 @@ def bank_focus(req: FocusRequest, db: DBSession = Depends(get_db)):
             changed += 1
     db.commit()
     return {"ok": True, "changed": changed, "starred": req.focused}
+
+
+# ---------- 录入题库（含清洗去重） ----------
+
+class ImportRequest(BaseModel):
+    text: str  # 原始文本或 JSON 数组字符串
+    dedupe: bool = True  # 是否按题干相似度去重（阈值见 importer.SIMILARITY_THRESHOLD）
+
+
+def _title_of(stem: str) -> str:
+    """结果清单里的题目标题：题干截断。"""
+    stem = stem.strip().replace("\n", " ")
+    return stem if len(stem) <= 20 else stem[:19] + "…"
+
+
+@router.post("/import")
+async def bank_import(req: ImportRequest, db: DBSession = Depends(get_db)):
+    """录入题库：解析 → LLM 提取/补全 → 相似度去重 → 入库。
+
+    流程：
+    1. 解析 text（JSON 数组直接解析；纯文本按 空行/--- 切分，识别"答案：""技术栈：""知识点："行）；
+    2. 规则解析不出的片段，一次 LLM 调用做结构化提取；
+    3. 缺答案/缺技术栈的题，一次 LLM 调用批量补全（tech_stack 限定 python/agent/vue3）；
+    4. dedupe=true 时，与库内题目 + 本批次已接受题逐一算题干相似度，≥ 阈值跳过；
+    5. 通过的题插入 Question 表（tags=[技术栈, 知识点]，与种子脚本约定一致）。
+
+    LLM 不可用时降级：能解析完整的题照常入库，缺答案的进 errors。
+    """
+    result: dict = {"imported": [], "skipped": [], "enriched": [], "errors": []}
+    if not req.text.strip():
+        result["errors"].append({"title": "（空输入）", "reason": "没有可解析的内容"})
+        return result
+
+    # 1. 规则解析
+    items, leftovers = importer.parse_text(req.text)
+
+    # 2. LLM 结构化提取兜底（解析不出的片段）
+    if leftovers:
+        try:
+            items += await importer.llm_extract(leftovers)
+        except importer.LLMProviderUnavailableError as exc:
+            for chunk in leftovers:
+                result["errors"].append({
+                    "title": _title_of(chunk),
+                    "reason": f"规则解析失败，且 LLM 不可用：{exc}",
+                })
+        except ValueError as exc:
+            for chunk in leftovers:
+                result["errors"].append({"title": _title_of(chunk), "reason": f"LLM 提取失败：{exc}"})
+
+    # 3. 规整字段（技术栈归一化），丢掉连题干都没有的
+    valid: list[dict] = []
+    for it in items:
+        stem = str(it.get("stem") or "").strip()
+        if not stem:
+            continue
+        it["stem"] = stem
+        stack = importer.normalize_stack(it.get("tech_stack"))
+        it["tech_stack"] = stack or ""  # 无法识别的留空，交给补全
+        valid.append(it)
+
+    # 4. LLM 批量补全缺 answer / tech_stack 的题
+    try:
+        enrich_marks = await importer.llm_enrich(valid)
+    except importer.LLMProviderUnavailableError:
+        enrich_marks = [{"fields": []} for _ in valid]  # 降级：不补全，后面按缺字段进 errors
+    except ValueError:
+        enrich_marks = [{"fields": []} for _ in valid]
+
+    # 5. 去重 + 入库
+    existing_stems = [q.stem for q in db.exec(select(Question)).all()]
+    accepted_stems: list[str] = []
+    for it, mark in zip(valid, enrich_marks):
+        title = _title_of(it["stem"])
+        stack = importer.normalize_stack(it.get("tech_stack")) or "python"
+        answer = str(it.get("answer") or "").strip()
+        if not answer:
+            result["errors"].append({"title": title, "reason": "缺少标准答案，且 LLM 未能补全"})
+            continue
+        if not it.get("tech_stack"):
+            it["tech_stack"] = stack  # LLM 也没给出分类时兜底 python
+        if req.dedupe:
+            best_stem, best_sim = None, 0.0
+            for other in existing_stems + accepted_stems:
+                sim = importer.stem_similarity(it["stem"], other)
+                if sim > best_sim:
+                    best_stem, best_sim = other, sim
+            if best_sim >= importer.SIMILARITY_THRESHOLD:
+                result["skipped"].append({
+                    "title": title,
+                    "similar_to": _title_of(best_stem or ""),
+                    "similarity": round(best_sim * 100),
+                })
+                continue
+        question = Question(
+            stem=it["stem"],
+            answer=answer,
+            tech_stack=stack,
+            difficulty=it.get("difficulty") or "medium",
+            keywords=it.get("keywords") or [],
+            # tags 约定：第 1 个是技术栈大类，第 2 个是知识点分组（总览/图谱按它分组）
+            tags=[stack, str(it.get("knowledge_point") or "未分类").strip() or "未分类"],
+        )
+        db.add(question)
+        db.flush()  # 拿到自增 id 供响应回显
+        accepted_stems.append(it["stem"])
+        result["imported"].append({"id": question.id, "title": title, "tech_stack": stack})
+        if mark["fields"]:
+            result["enriched"].append({"title": title, "fields": mark["fields"]})
+    db.commit()
+    return result

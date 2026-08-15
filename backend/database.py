@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """数据库引擎与初始化。"""
+from sqlalchemy import text
 from sqlmodel import SQLModel, create_engine
 
 from config import settings
@@ -13,7 +14,16 @@ def init_db() -> None:
     import models  # noqa: F401  确保所有表已注册到 metadata
 
     SQLModel.metadata.create_all(engine)
+    migrate_records_annotated_answer()
     backfill_retry_queue()
+
+
+def migrate_records_annotated_answer() -> None:
+    """轻量迁移：旧库的 records 表补 annotated_answer 列（create_all 不会给已有表加列）。"""
+    with engine.begin() as conn:
+        cols = {row[1] for row in conn.execute(text("PRAGMA table_info(records)"))}
+        if "annotated_answer" not in cols:
+            conn.execute(text("ALTER TABLE records ADD COLUMN annotated_answer TEXT"))
 
 
 def backfill_retry_queue() -> None:

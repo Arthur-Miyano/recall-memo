@@ -2,16 +2,19 @@
 // 全局组件：水墨小螃蟹（智能助理入口）+ 对话面板
 // 职责：常驻页面、原地挥钳待机；点击开合对话面板（5 个快捷提示词 + 自由输入 + 思考过程展示）；
 //       可按住拖动到任意位置（位置存 localStorage），待机时偶尔吐泡泡，拖动结束 / 收到答复时吐一串
-// 数据流：POST /api/assistant/chat（{message} 或 {quick}）→ {thinking, reply}；
-//         请求失败回退 mock/assistant.js 演示回复（console.warn，不打断对话）
+// 数据流：POST /api/assistant/chat（{message} 或 {quick}）→ {thinking, reply}，每次问答后端落库；
+//         GET  /api/assistant/history —— 面板首次打开时拉取最近 50 条历史渲染（思考过程随消息展示）；
+//         请求失败回退 mock/assistant.js 演示回复（console.warn，不打断对话、不白屏）
 // 动效：
 //   - 待机：crabSway 身体轻摇 + clawWave 双钳交替挥舞 + crabBlink 眨眼（纯 CSS）
 //   - 拖动：pointerdown/move/up，位移 < 6px 视为点击（开合面板），否则为拖动；拖动中身体定格、双钳加速
 //   - 吐泡泡：bubbles 数组渲染墨线圈，bubbleUp 上升消散；定时器每 4.5s 吐一个，burst() 连吐三个
 //   - 面板开合：chat-panel.show 的 screenIn 动画，面板位置跟随螃蟹（下半屏则向上开）
-import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
+//   - 面板缩放：CSS resize:both（手柄在面板右下角，与螃蟹拖动互不干扰），尺寸存 localStorage，
+//     ResizeObserver 监听保存；panelStyle 按当前尺寸钳制在视口内
+import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { assistant } from '../mock/assistant'
-import { assistantChat } from '../api'
+import { assistantChat, getAssistantHistory } from '../api'
 
 // 快捷按钮 → 后端 quick 指令
 const QUICK_KEYS = {
@@ -22,11 +25,32 @@ const QUICK_KEYS = {
 const panelShow = ref(false)
 const inputText = ref('')
 const logEl = ref(null)
+const panelEl = ref(null)
 // 聊天记录：{ who, text } 普通消息；{ who, think: [] } 思考过程
 const messages = ref([{ who: '记忆助手', text: assistant.greeting }])
 
+let historyLoaded = false  // 历史只拉一次，之后的问答直接本地追加
+
 function togglePanel() { panelShow.value = !panelShow.value }
 function closePanel() { panelShow.value = false }
+
+// 面板首次打开：拉取历史对话渲染（用户消息 + 助手思考过程 + 回复），失败保持现状
+watch(panelShow, async (show) => {
+  if (!show || historyLoaded) return
+  historyLoaded = true
+  try {
+    const d = await getAssistantHistory(50)
+    for (const m of d.messages || []) {
+      if (m.role === 'assistant' && Array.isArray(m.thinking) && m.thinking.length) {
+        messages.value.push({ who: '思考过程', think: m.thinking })
+      }
+      messages.value.push({ who: m.role === 'user' ? '你' : '记忆助手', text: m.content })
+    }
+    scrollBottom()
+  } catch (e) {
+    console.warn('[crab] 拉取对话历史失败，保持当前会话：', e.message)
+  }
+})
 
 /* ---------- 拖动 ---------- */
 // 螃蟹左上角坐标（fixed 定位），默认左上角；读取上次拖到的位置
@@ -95,13 +119,38 @@ onUnmounted(() => {
 })
 
 /* ---------- 对话面板 ---------- */
+// 面板尺寸：CSS resize:both 拖拽右下角手柄调整；ResizeObserver 保存到 localStorage，下次打开恢复
+const panelSize = ref({ w: 380, h: 460 })
+try {
+  const saved = JSON.parse(localStorage.getItem('recall-chat-size'))
+  if (saved && Number.isFinite(saved.w) && Number.isFinite(saved.h)) panelSize.value = saved
+} catch { /* 损坏数据忽略，用默认尺寸 */ }
+
+let resizeObserver = null
+
+onMounted(() => {
+  // 监听面板尺寸变化（resize 手柄拖动），写入 localStorage；面板隐藏时尺寸为 0，不保存
+  resizeObserver = new ResizeObserver(entries => {
+    const r = entries[0]?.contentRect
+    if (!r || !panelShow.value || r.width < 10 || r.height < 10) return
+    panelSize.value = { w: Math.round(r.width), h: Math.round(r.height) }
+    localStorage.setItem('recall-chat-size', JSON.stringify(panelSize.value))
+  })
+  if (panelEl.value) resizeObserver.observe(panelEl.value)
+})
+onUnmounted(() => { resizeObserver?.disconnect() })
+
 // 面板跟随螃蟹：水平对齐并钳制在视口内；螃蟹在下半屏时面板向上开，避免被裁掉
+// 位置随 panelSize 一起钳制：调整后若超出视口则收回到可见范围
 const panelStyle = computed(() => {
   const vw = window.innerWidth, vh = window.innerHeight
-  const left = Math.min(Math.max(pos.value.x, 8), vw - 396)
-  const openBelow = pos.value.y + 92 + 430 < vh
-  const top = openBelow ? pos.value.y + 92 : Math.max(8, pos.value.y - 438)
-  return { left: left + 'px', top: top + 'px' }
+  const { w, h } = panelSize.value
+  const left = Math.min(Math.max(pos.value.x, 8), Math.max(8, vw - w - 8))
+  const openBelow = pos.value.y + 92 + h < vh
+  const top = openBelow
+    ? Math.min(pos.value.y + 92, Math.max(8, vh - h - 8))
+    : Math.max(8, pos.value.y - h - 8)
+  return { left: left + 'px', top: top + 'px', width: w + 'px', height: h + 'px' }
 })
 
 // 滚动到底部
@@ -188,8 +237,8 @@ function send() {
     <span class="crab-tip">记忆助手 · 点击召唤 · 按住拖我</span>
   </div>
 
-  <!-- 对话面板：位置跟随螃蟹 -->
-  <div class="chat-panel" :class="{ show: panelShow }" :style="panelStyle">
+  <!-- 对话面板：位置跟随螃蟹；resize:both 可拖拽右下角调整宽高（尺寸记忆在 localStorage） -->
+  <div class="chat-panel" :class="{ show: panelShow }" :style="panelStyle" ref="panelEl">
     <div class="chat-head"><b>记忆助手</b><span>RECALL ASSISTANT</span><span class="x" @click="closePanel">✕</span></div>
     <div class="chat-quick">
       <button v-for="p in assistant.quickPrompts" :key="p.label" @click="ask(p.q, QUICK_KEYS[p.label])">{{ p.label }}</button>
