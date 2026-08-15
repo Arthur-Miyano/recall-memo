@@ -1,18 +1,55 @@
 // 真实后端接口封装：baseURL 指向本地 FastAPI，统一错误处理
 // 各视图用法：try { 真实数据 } catch { console.warn + 回退 mock } —— 页面永远不白屏
+import { ref } from 'vue'
+
 const BASE_URL = 'http://localhost:8000'
 
-async function request(path, { method = 'GET', body } = {}) {
-  const resp = await fetch(BASE_URL + path, {
-    method,
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-  })
+// 全局离线标记：仅「网络层失败 → 组件回退 mock 演示数据」时置位（App.vue 据此显示角标）
+// 4xx/5xx 业务错误（如导入校验）不算离线；任意请求成功后自动清除
+export const offline = ref(false)
+
+// 网络层失败统一处理：置离线标记，错误对象带 isNetwork 供组件按需判断
+function networkError(method, path, cause) {
+  offline.value = true
+  const err = new Error(`${method} ${path} 网络错误（后端不可达）：${cause.message}`)
+  err.isNetwork = true
+  return err
+}
+
+export async function request(path, { method = 'GET', body } = {}) {
+  let resp
+  try {
+    resp = await fetch(BASE_URL + path, {
+      method,
+      headers: body ? { 'Content-Type': 'application/json' } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+    })
+  } catch (e) {
+    throw networkError(method, path, e)
+  }
   if (!resp.ok) {
     let detail = resp.statusText
     try { detail = (await resp.json()).detail || detail } catch { /* 非 JSON 错误体 */ }
     throw new Error(`${method} ${path} 失败（${resp.status}）：${detail}`)
   }
+  offline.value = false // 后端恢复后下一次成功请求自动摘掉角标
+  return resp.json()
+}
+
+// multipart 版本（文件上传）：与 request 同款错误处理，但不设 Content-Type（浏览器自动生成 boundary）
+export async function requestForm(path, formData) {
+  let resp
+  try {
+    resp = await fetch(BASE_URL + path, { method: 'POST', body: formData })
+  } catch (e) {
+    throw networkError('POST', path, e)
+  }
+  if (!resp.ok) {
+    let detail = resp.statusText
+    try { detail = (await resp.json()).detail || detail } catch { /* 非 JSON 错误体 */ }
+    throw new Error(`POST ${path} 失败（${resp.status}）：${detail}`)
+  }
+  offline.value = false
   return resp.json()
 }
 

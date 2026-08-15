@@ -6,6 +6,11 @@ from models import Question
 
 from .base import BaseAgent
 
+# 变体缓存上限：只保留最近 N 条。
+# 原因有二：1) 防止 Question.variants JSON 列无限膨胀（读写都随之变慢）；
+#          2) 历史变体会全量注入 prompt，无上限会把 prompt 撑长、摊薄避重效果。
+MAX_STORED_VARIANTS = 8
+
 # 变体生成的系统提示词：约束修改幅度与技术内核
 _VARIANT_SYSTEM_PROMPT = (
     "你是一位经验丰富的技术面试官，正在对候选人进行口头提问。"
@@ -30,8 +35,8 @@ class InterviewerAgent(BaseAgent):
     async def generate_variant(self, question: Question, db: DBSession) -> str:
         """基于原始题干生成面试官口吻的变体题干。
 
-        - 已用过的变体会注入 prompt，要求模型避免重复；
-        - 生成结果追加到 Question.variants 缓存入库，下次生成时继续避重。
+        - 已用过的变体（仅最近 MAX_STORED_VARIANTS 条）会注入 prompt，要求模型避免重复；
+        - 生成结果追加到 Question.variants 缓存入库（超出上限丢弃最旧的），下次生成时继续避重。
         """
         used = list(question.variants or [])
         used_text = "\n".join(f"- {v}" for v in used) if used else "（暂无）"
@@ -48,8 +53,9 @@ class InterviewerAgent(BaseAgent):
         _, content = await self.llm.chat(messages, temperature=0.9)
         variant = content.strip().strip('"')
 
-        # 缓存变体到题库表（整体重新赋值，触发 JSON 列更新）
-        question.variants = [*used, variant]
+        # 缓存变体到题库表（整体重新赋值，触发 JSON 列更新）；只保留最近 N 条，
+        # 防止 variants 无限膨胀：既避免 JSON 列越写越大，也避免 prompt 注入的历史变体越积越长
+        question.variants = [*used, variant][-MAX_STORED_VARIANTS:]
         db.add(question)
         db.commit()
         return variant

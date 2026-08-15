@@ -4,6 +4,7 @@
 // 数据流：导航项来自 router 配置的 meta.nav；螃蟹面板状态在 InkCrab 内部自管理
 import { useRoute, useRouter } from 'vue-router'
 import InkCrab from './components/InkCrab.vue'
+import { offline } from './api'
 
 const route = useRoute()
 const router = useRouter()
@@ -26,4 +27,26 @@ const router = useRouter()
 
   <!-- 全局水墨小螃蟹：固定左上角，点击开合对话面板 -->
   <InkCrab />
+
+  <!-- 离线模式角标：后端不可达、页面回退 mock 演示数据时显示；下一次成功请求后自动消失 -->
+  <div v-if="offline" class="offline-badge">离线模式 · 演示数据</div>
 </template>
+
+<style scoped>
+/* 印章红细边 + mono 小字，固定左下角（避开左上角螃蟹与顶部导航），风格克制 */
+.offline-badge {
+  position: fixed;
+  left: 16px;
+  bottom: 16px;
+  z-index: calc(var(--z-nav) + 1);
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: .08em;
+  color: var(--seal);
+  border: 1px solid var(--seal);
+  border-radius: 2px;
+  padding: 4px 10px;
+  background: var(--paper-hi);
+  pointer-events: none;
+}
+</style>

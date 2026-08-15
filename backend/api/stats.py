@@ -1,55 +1,44 @@
 # -*- coding: utf-8 -*-
 """统计接口：给前端仪表盘/知识图谱直接可用的聚合数据。"""
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, Query
 from sqlmodel import Session as DBSession, select
 
 from agents.base import SCORE_PASS_THRESHOLD
-from database import engine
+from api.deps import get_db
 from models import DailyStat, Question, Record, Session
+from timeutil import as_local, days_ago_local, local_day_start_utc
 
 # 会话模式 → 中文展示名
 MODE_DISPLAY = {"memorize": "记忆训练", "interview": "面试", "review": "回忆"}
 
-
-def _local_date(dt: datetime) -> date:
-    """记录时间戳按 UTC 存储，转成当地日期再分组（与 DailyStat.date 口径一致）。"""
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone().date()
-
 router = APIRouter(prefix="/stats", tags=["stats"])
-
-
-def get_db():
-    """每个请求一个 SQLModel Session（单 worker + SQLite，随请求关闭）。"""
-    with DBSession(engine) as db:
-        yield db
 
 
 @router.get("/overview")
 def stats_overview(db: DBSession = Depends(get_db)):
     """总览：各技术栈的正确率、已覆盖/总题数，以及全局汇总。"""
-    questions = list(db.exec(select(Question)).all())
-    records = list(db.exec(select(Record)).all())
-    q_stack = {q.id: q.tech_stack for q in questions}
+    # 只取需要的列，避免整行 ORM 对象载入（per-stack 聚合仍需 Python 侧分组，难以完全下推）
+    q_rows = db.exec(select(Question.id, Question.tech_stack)).all()
+    r_rows = db.exec(select(Record.question_id, Record.score_total)).all()
+    q_stack = {qid: stack for qid, stack in q_rows}
 
     stacks: dict[str, dict] = {}
-    for q in questions:
-        stacks.setdefault(q.tech_stack, {"total_questions": 0, "covered": 0, "attempts": 0, "pass": 0, "scores": []})
-        stacks[q.tech_stack]["total_questions"] += 1
+    for _, stack in q_rows:
+        stacks.setdefault(stack, {"total_questions": 0, "covered": 0, "attempts": 0, "pass": 0, "scores": []})
+        stacks[stack]["total_questions"] += 1
     covered_ids: set[int] = set()
-    for r in records:
-        stack = q_stack.get(r.question_id)
+    for qid, score_total in r_rows:
+        stack = q_stack.get(qid)
         if stack is None:
             continue
-        covered_ids.add(r.question_id)
+        covered_ids.add(qid)
         entry = stacks[stack]
         entry["attempts"] += 1
-        if r.score_total is not None:
-            entry["scores"].append(r.score_total)
-            if r.score_total >= SCORE_PASS_THRESHOLD:
+        if score_total is not None:
+            entry["scores"].append(score_total)
+            if score_total >= SCORE_PASS_THRESHOLD:
                 entry["pass"] += 1
 
     per_stack = {}
@@ -64,12 +53,12 @@ def stats_overview(db: DBSession = Depends(get_db)):
             "avg_score": round(sum(e["scores"]) / scored, 1) if scored else None,
         }
 
-    total_scored = [r.score_total for r in records if r.score_total is not None]
+    total_scored = [score for _, score in r_rows if score is not None]
     return {
         "per_stack": per_stack,
-        "total_questions": len(questions),
+        "total_questions": len(q_rows),
         "covered": len(covered_ids),
-        "total_attempts": len(records),
+        "total_attempts": len(r_rows),
         "avg_score": round(sum(total_scored) / len(total_scored), 1) if total_scored else None,
     }
 
@@ -77,7 +66,7 @@ def stats_overview(db: DBSession = Depends(get_db)):
 @router.get("/daily")
 def stats_daily(days: int = Query(default=7, ge=1, le=90), db: DBSession = Depends(get_db)):
     """近 N 天答题趋势：每天题数、成功数、失败数（无数据的日期补零，方便前端画折线）。"""
-    since = date.today() - timedelta(days=days - 1)
+    since = days_ago_local(days - 1)
     rows = db.exec(select(DailyStat).where(DailyStat.date >= since).order_by(DailyStat.date)).all()
     by_date = {s.date: s for s in rows}
     result = []
@@ -99,16 +88,19 @@ def stats_daily_detail(days: int = Query(default=30, ge=1, le=90), db: DBSession
 
     供仪表盘「每日背诵记录」放大视图使用；日期口径与 /stats/daily 一致（本地日期）。
     """
-    since = date.today() - timedelta(days=days - 1)
-    records = db.exec(select(Record).order_by(Record.created_at)).all()
+    since = days_ago_local(days - 1)
+    # 日期过滤下推 SQL：记录存 UTC，窗口起点取本地 since 日 0 点对应的 UTC 时间
+    # （库中时间戳为 UTC 墙钟，比较参数去 tzinfo 避免 SQLite 绑定带时区后缀）
+    since_utc = local_day_start_utc(since).replace(tzinfo=None)
+    records = db.exec(
+        select(Record).where(Record.created_at >= since_utc).order_by(Record.created_at)
+    ).all()
     q_map = {q.id: q for q in db.exec(select(Question)).all()}
     s_map = {s.id: s for s in db.exec(select(Session)).all()}
 
     by_day: dict[date, list[dict]] = {}
     for r in records:
-        day = _local_date(r.created_at)
-        if day < since:
-            continue
+        day = as_local(r.created_at).date()
         q = q_map.get(r.question_id)
         session = s_map.get(r.session_id)
         by_day.setdefault(day, []).append({
@@ -134,10 +126,11 @@ def stats_per_question(db: DBSession = Depends(get_db)):
     供仪表盘「各技术栈正确率」放大表格与「知识图谱」节点详情使用。
     """
     questions = list(db.exec(select(Question)).all())
-    records = list(db.exec(select(Record)).all())
+    # 记录只取分组/排序/得分所需列，避免整行 ORM 对象载入
+    r_rows = db.exec(select(Record.id, Record.question_id, Record.score_total, Record.created_at)).all()
 
-    by_q: dict[int, list[Record]] = {}
-    for r in sorted(records, key=lambda r: (r.created_at, r.id or 0)):
+    by_q: dict[int, list[tuple]] = {}
+    for r in sorted(r_rows, key=lambda r: (r.created_at, r.id or 0)):
         by_q.setdefault(r.question_id, []).append(r)
 
     items = []
@@ -165,11 +158,8 @@ def stats_per_question(db: DBSession = Depends(get_db)):
             "last_at": recs[-1].created_at.isoformat() if recs else None,
             # 最近 5 次得分记录（时间升序），图谱节点详情展示用
             "recent_scores": [
-                {"date": _local_date(r.created_at).isoformat(), "score": r.score_total}
+                {"date": as_local(r.created_at).date().isoformat(), "score": r.score_total}
                 for r in scored[-5:]
             ],
         })
     return {"total": len(items), "items": items}
-
-# reload probe
-# probe2

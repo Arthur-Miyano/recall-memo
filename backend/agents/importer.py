@@ -19,6 +19,8 @@ from typing import Any, Optional
 from llm import llm_router
 from llm.router import LLMProviderUnavailableError
 
+from .parsing import extract_json_array
+
 # 题干相似度阈值：>= 该值视为重复，跳过入库
 SIMILARITY_THRESHOLD = 0.85
 
@@ -174,12 +176,11 @@ def parse_text(text: str) -> tuple[list[dict[str, Any]], list[str]]:
 
 
 def _extract_json_array(raw: str) -> list[dict]:
-    """从 LLM 回复里抠出 JSON 数组（容忍前后多余文字/代码块）。"""
-    match = re.search(r"\[.*\]", raw.strip(), flags=re.DOTALL)
-    if not match:
-        raise ValueError("LLM 回复中不含 JSON 数组")
-    data = json.loads(match.group(0))
-    return [d for d in data if isinstance(d, dict)]
+    """从 LLM 回复里抠出 JSON 数组（容忍前后多余文字/代码块）。
+
+    实现已抽取为 agents/parsing.extract_json_array（找不到数组抛 ValueError 的语义保持不变）。
+    """
+    return extract_json_array(raw)
 
 
 async def llm_extract(chunks: list[str]) -> list[dict[str, Any]]:

@@ -8,3 +8,4 @@ dist/
 *.sqlite3
 .DS_Store
 .tmp/
+.pytest-tmp/

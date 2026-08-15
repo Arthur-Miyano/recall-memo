@@ -9,18 +9,13 @@ from sqlmodel import Session as DBSession, select
 
 from agents import importer
 from agents.base import SCORE_PASS_THRESHOLD
-from database import engine
+from api.deps import get_db
 from models import Question, QuestionFocus, Record, RetryQueueItem
 
 router = APIRouter(prefix="/bank", tags=["bank"])
 
 # 技术栈展示名
 STACK_DISPLAY = {"python": "Python", "agent": "Agent", "vue3": "Vue 3", "database": "Database"}
-
-
-def get_db():
-    with DBSession(engine) as db:
-        yield db
 
 
 def _group_name(question: Question) -> str:
@@ -41,7 +36,8 @@ def _short_title(question: Question) -> str:
 def bank_overview(db: DBSession = Depends(get_db)):
     """全题列表：按 技术栈 → 知识点 两级分组，每题带背诵状态与重点标记。"""
     questions = list(db.exec(select(Question)).all())
-    records = list(db.exec(select(Record)).all())
+    # 记录只取"每题最新得分"所需列，避免整行 ORM 对象载入
+    records = db.exec(select(Record.id, Record.question_id, Record.score_total, Record.created_at)).all()
     focus_ids = {f.question_id for f in db.exec(select(QuestionFocus)).all()}
     retry_ids = {r.question_id for r in db.exec(select(RetryQueueItem)).all()}
 

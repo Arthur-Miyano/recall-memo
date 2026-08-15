@@ -59,7 +59,7 @@ function resetTimer(q) {
 }
 
 // 应用一道新题到界面
-function applyQuestion(q, totalCount) {
+function applyQuestion(q) {
   question.value = q.variant_stem
   progressTag.value = `第 ${q.progress} 题`
   followTag.value = q.followup ? `追问 ${q.followup}` : '独立题'
@@ -84,7 +84,7 @@ onMounted(async () => {
     const d = await createSession('interview', stack, count)
     sessionId.value = d.session_id
     topLeft.value = `INTERVIEW — ${(stack || 'mixed') === 'mixed' ? '混合场' : String(stack).toUpperCase()} ${d.question_count} 题`
-    applyQuestion(d.first_question, d.question_count)
+    applyQuestion(d.first_question)
   } catch (e) {
     console.warn('[interview] 创建面试会话失败，回退 mock 演示数据：', e.message)
     useMock.value = true

@@ -14,9 +14,56 @@ def init_db() -> None:
     import models  # noqa: F401  确保所有表已注册到 metadata
 
     SQLModel.metadata.create_all(engine)
+    ensure_indexes()
     migrate_records_annotated_answer()
     migrate_chat_messages_session_id()
     backfill_retry_queue()
+    expire_stale_sessions()
+
+
+def ensure_indexes() -> None:
+    """给旧库补高频过滤字段索引（SQLite create_all 不会给已有表补索引）。"""
+    stmts = [
+        "CREATE INDEX IF NOT EXISTS ix_records_question_id ON records (question_id)",
+        "CREATE INDEX IF NOT EXISTS ix_records_session_id ON records (session_id)",
+        "CREATE INDEX IF NOT EXISTS ix_records_created_at ON records (created_at)",
+    ]
+    with engine.begin() as conn:
+        for stmt in stmts:
+            conn.execute(text(stmt))
+
+
+# 会话终态：处于这些状态的会话不算"进行中"（与 agents/orchestrator.py 的状态机对应；
+# 不 import 是为避免 database ↔ agents 循环依赖）
+_TERMINAL_SESSION_STATES = {"IDLE", "INTERVIEW_REVIEW", "EXPIRED"}
+
+
+def expire_stale_sessions() -> None:
+    """启动时把「昨天及更早的进行中会话」标记为 EXPIRED（页面刷新/中断留下的孤儿会话）。
+
+    - 进行中 = state 不在终态集合（IDLE / INTERVIEW_REVIEW / EXPIRED）；
+    - 归属日期按本地时区口径（updated_at 转本地日期 < 本地今天才清理）；
+      今天的进行中会话保留——用户可能只是刷新页面；
+    - EXPIRED 是状态机不认识的终态标记：之后任何操作都会自然抛 StateError，
+      统计口径（records / daily_stats）不涉及 state，不受影响。
+    """
+    from sqlmodel import Session as DBSession, select
+
+    from models import Session
+    from timeutil import as_local, local_today
+
+    today = local_today()
+    with DBSession(engine) as db:
+        stale = [
+            s for s in db.exec(select(Session)).all()
+            if s.state not in _TERMINAL_SESSION_STATES and as_local(s.updated_at).date() < today
+        ]
+        for s in stale:
+            s.state = "EXPIRED"
+            s.active_agent = ""
+            db.add(s)
+        if stale:
+            db.commit()
 
 
 def migrate_records_annotated_answer() -> None:

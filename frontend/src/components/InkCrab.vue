@@ -19,6 +19,7 @@ import { assistant } from '../mock/assistant'
 import {
   assistantChat, getAssistantHistory,
   getAssistantSessions, createAssistantSession, deleteAssistantSession,
+  offline,
 } from '../api'
 
 // 快捷按钮 → 后端 quick 指令
@@ -289,6 +290,7 @@ async function ask(text, quick) {
     messages.value.push({ who: '记忆助手', text: d.reply })
   } catch (e) {
     console.warn('[crab] 助理接口失败，回退 mock 演示回复：', e.message)
+    offline.value = true // 展示了演示回复，置全局离线角标（下一次任意请求成功后自动清除）
     thinkingMsg.think = [...assistant.thinking, `（接口异常：${e.message}，以下为演示回复）`]
     messages.value.push({ who: '记忆助手', text: assistant.reply })
   }

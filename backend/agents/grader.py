@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 """评分 Agent：结构化评分 JSON + difflib 反背诵检测。"""
-import json
 import logging
 import re
 from difflib import SequenceMatcher
@@ -9,6 +8,7 @@ from typing import Any, Optional
 from models import Question
 
 from .base import BaseAgent
+from .parsing import parse_json_object
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +85,7 @@ class GraderAgent(BaseAgent):
             {"role": "user", "content": user_prompt},
         ]
         _, content = await self.llm.chat(messages, temperature=0.2)
-        parsed = self._parse_json(content)
+        parsed = parse_json_object(content, log_label="评分")
 
         accuracy = _clamp(parsed.get("accuracy"))
         logic = _clamp(parsed.get("logic"))
@@ -147,19 +147,3 @@ class GraderAgent(BaseAgent):
         if "[[omiss]]" not in annotated and "[[logic]]" not in annotated:
             return None
         return annotated
-
-    @staticmethod
-    def _parse_json(content: str) -> dict[str, Any]:
-        """从模型输出中稳健地提取 JSON 对象（容忍代码块围栏与前后杂文本）。"""
-        text = content.strip()
-        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.IGNORECASE).strip()
-        match = re.search(r"\{.*\}", text, flags=re.DOTALL)
-        if not match:
-            logger.warning("评分输出中未找到 JSON：%s", content[:200])
-            return {}
-        try:
-            data = json.loads(match.group(0))
-        except json.JSONDecodeError:
-            logger.warning("评分 JSON 解析失败：%s", content[:200])
-            return {}
-        return data if isinstance(data, dict) else {}

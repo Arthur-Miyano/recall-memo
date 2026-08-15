@@ -1,31 +1,7 @@
-// 仪表盘放大视图 & 录入题库的真实接口封装（与 api/index.js 同款风格，独立文件避免并行冲突）
+// 仪表盘放大视图 & 录入题库的业务接口封装
+// 传输层（request/requestForm/错误处理/离线标记）统一复用 api/index.js，本文件只保留业务函数
 // 用法约定同 index.js：try { 真实数据 } catch { console.warn + 空态/回退 } —— 页面永远不白屏
-const BASE_URL = 'http://localhost:8000'
-
-async function request(path, { method = 'GET', body } = {}) {
-  const resp = await fetch(BASE_URL + path, {
-    method,
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-  })
-  if (!resp.ok) {
-    let detail = resp.statusText
-    try { detail = (await resp.json()).detail || detail } catch { /* 非 JSON 错误体 */ }
-    throw new Error(`${method} ${path} 失败（${resp.status}）：${detail}`)
-  }
-  return resp.json()
-}
-
-// multipart 版本（文件上传）：与 request 同款错误处理，但不设 Content-Type（浏览器自动生成 boundary）
-async function requestForm(path, formData) {
-  const resp = await fetch(BASE_URL + path, { method: 'POST', body: formData })
-  if (!resp.ok) {
-    let detail = resp.statusText
-    try { detail = (await resp.json()).detail || detail } catch { /* 非 JSON 错误体 */ }
-    throw new Error(`POST ${path} 失败（${resp.status}）：${detail}`)
-  }
-  return resp.json()
-}
+import { request, requestForm } from './index'
 
 /* ---------- 仪表盘放大视图 ---------- */
 // 近 N 天逐日答题明细（只含答题日）：每日背诵记录放大视图

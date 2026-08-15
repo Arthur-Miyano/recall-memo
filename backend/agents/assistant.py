@@ -1,16 +1,16 @@
 # -*- coding: utf-8 -*-
 """智能助理 Agent：中央记忆。答题写库、daily_stats 聚合、历史/统计查询、终局复盘报告。"""
-import json
 import logging
-import re
 from datetime import date
 from typing import Any, Optional
 
 from sqlmodel import Session as DBSession, select
 
 from models import DailyStat, Question, Record, RetryQueueItem, Session
+from timeutil import local_today
 
 from .base import BaseAgent, SCORE_PASS_THRESHOLD, consecutive_success
+from .parsing import parse_json_object
 
 logger = logging.getLogger(__name__)
 
@@ -110,8 +110,8 @@ class AssistantAgent(BaseAgent):
 
     @staticmethod
     def _bump_daily_stat(db: DBSession, passed: bool) -> None:
-        """更新当日聚合统计并提交。"""
-        today = date.today()
+        """更新当日聚合统计并提交。「当日」按本地时区口径（与 stats 接口分组口径一致）。"""
+        today = local_today()
         stat = db.exec(select(DailyStat).where(DailyStat.date == today)).first()
         if stat is None:
             stat = DailyStat(date=today)
@@ -251,7 +251,7 @@ class AssistantAgent(BaseAgent):
         ]
         try:
             _, content = await self.llm.chat(messages, temperature=0.3)
-            parsed = self._parse_json(content)
+            parsed = parse_json_object(content)
         except Exception as exc:  # LLM 不可用时给出兜底结构，报告其他部分不受影响
             logger.warning("复盘分析 LLM 调用失败：%s", exc)
             parsed = {}
@@ -306,17 +306,3 @@ class AssistantAgent(BaseAgent):
                 "reason": f"历史平均分 {avg:.1f}，长期薄弱",
             })
         return suggestions
-
-    @staticmethod
-    def _parse_json(content: str) -> dict[str, Any]:
-        """从模型输出中稳健地提取 JSON 对象（容忍代码块围栏与前后杂文本）。"""
-        text = content.strip()
-        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.IGNORECASE).strip()
-        match = re.search(r"\{.*\}", text, flags=re.DOTALL)
-        if not match:
-            return {}
-        try:
-            data = json.loads(match.group(0))
-        except json.JSONDecodeError:
-            return {}
-        return data if isinstance(data, dict) else {}

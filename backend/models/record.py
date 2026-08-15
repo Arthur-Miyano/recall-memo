@@ -34,7 +34,7 @@ class Record(SQLModel, table=True):
     # 补答记录：原记录保留不覆盖，补答写为新记录并标记
     is_retry: bool = Field(default=False, description="是否补答记录")
     retry_of: Optional[int] = Field(default=None, description="补答对应的原记录 id")
-    created_at: datetime = Field(default_factory=_utcnow, description="答题时间戳")
+    created_at: datetime = Field(default_factory=_utcnow, index=True, description="答题时间戳")
 
 
 class DailyStat(SQLModel, table=True):

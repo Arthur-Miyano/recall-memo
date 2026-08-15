@@ -10,7 +10,7 @@ GET /history?session_id=&limit=50 按时间正序返回该会话历史（不带 
 会话管理：GET/POST /sessions、DELETE /sessions/{id}。
 """
 import json
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -18,10 +18,11 @@ from pydantic import BaseModel
 from sqlmodel import Session as DBSession, select
 
 from agents.base import SCORE_PASS_THRESHOLD
-from database import engine
+from api.deps import get_db
 from llm import llm_router
 from llm.router import LLMProviderUnavailableError
 from models import ChatMessage, ChatSession, DailyStat, Question, QuestionFocus, Record, RetryQueueItem
+from timeutil import as_local, local_day_start_utc, local_today
 
 router = APIRouter(prefix="/assistant", tags=["assistant"])
 
@@ -40,11 +41,6 @@ _SYSTEM_PROMPT = (
     "数据不足时如实说明并给出可执行的建议。回答控制在 200 字以内。"
     "注意：前端按纯文本渲染，不要使用 Markdown 语法（#、**、- 列表等）。"
 )
-
-
-def get_db():
-    with DBSession(engine) as db:
-        yield db
 
 
 class ChatRequest(BaseModel):
@@ -71,19 +67,20 @@ def _resolve_session(db: DBSession, session_id: Optional[int]) -> ChatSession:
 
 def _collect_profile(db: DBSession) -> tuple[str, list[str]]:
     """汇总背诵档案为给 LLM 的上下文文本，同时产出带具体数据的 thinking 步骤描述。"""
+    # 档案汇总需逐题/逐条交叉引用（题干文本、队列来源等），全量载入保留；
+    # 记录表只取统计所需列，避免整行 ORM 对象载入
     questions = list(db.exec(select(Question)).all())
-    records = list(db.exec(select(Record)).all())
+    records = db.exec(select(Record.question_id, Record.score_total, Record.created_at)).all()
 
-    today = date.today()
-    week_start = datetime.combine(today - timedelta(days=6), time.min, tzinfo=timezone.utc)
+    today = local_today()
+    # 近 7 天窗口起点：本地 6 天前 0 点换算成 UTC，与库中 UTC 时间戳比较
+    week_start = local_day_start_utc(today - timedelta(days=6))
     q_map = {q.id: q for q in questions}
 
     covered = {r.question_id for r in records}
-    today_records = [r for r in records if r.created_at.date() >= today]
-    week_records = [
-        r for r in records
-        if (r.created_at if r.created_at.tzinfo else r.created_at.replace(tzinfo=timezone.utc)) >= week_start
-    ]
+    # "今天"按本地日期归属：记录存 UTC，先转本地日期再与 today 比较
+    today_records = [r for r in records if as_local(r.created_at).date() >= today]
+    week_records = [r for r in records if as_local(r.created_at) >= week_start]
     # 待补答队列与重点题（提前查出，供 thinking 引用具体题名）
     queue_items = list(db.exec(select(RetryQueueItem).order_by(RetryQueueItem.created_at)).all())
     focus_ids = {f.question_id for f in db.exec(select(QuestionFocus)).all()}

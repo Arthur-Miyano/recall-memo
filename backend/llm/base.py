@@ -19,26 +19,36 @@ class BaseLLMClient(ABC):
     def __init__(self, api_key: str, timeout: float = 60.0) -> None:
         self.api_key = api_key
         self.timeout = timeout
+        # 惰性单例 AsyncClient：首次请求时创建，之后复用（见 _get_client）
+        self._client: httpx.AsyncClient | None = None
 
     @property
     def available(self) -> bool:
         """是否可用：配置了 api key 才可用。"""
         return bool(self.api_key)
 
+    def _get_client(self) -> httpx.AsyncClient:
+        """惰性单例 AsyncClient：进程生命周期内复用，避免每次请求新建 TCP/TLS 连接。
+
+        超时与鉴权头固定在客户端上；Provider 实例随 LLMRouter.reload() 重建时
+        旧客户端随之废弃（旧连接由 httpx GC 兜底关闭，reload 是低频操作，可接受）。
+        """
+        if self._client is None:
+            self._client = httpx.AsyncClient(
+                base_url=self.base_url,
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                timeout=self.timeout,
+            )
+        return self._client
+
     async def chat(self, messages: list[dict[str, str]], **kwargs: Any) -> str:
         """发送对话请求，返回模型的文本回复。"""
         if not self.available:
             raise RuntimeError(f"Provider {self.name} 未配置 API Key，不可用")
         payload: dict[str, Any] = {"model": self.model, "messages": messages, **kwargs}
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.post(
-                f"{self.base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                json=payload,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        return self._extract_content(data)
+        resp = await self._get_client().post("/chat/completions", json=payload)
+        resp.raise_for_status()
+        return self._extract_content(resp.json())
 
     @abstractmethod
     def _extract_content(self, data: dict[str, Any]) -> str:

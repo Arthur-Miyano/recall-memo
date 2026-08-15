@@ -9,16 +9,10 @@ from sqlmodel import Session as DBSession, select
 
 from agents import StateError, orchestrator
 from agents.orchestrator import get_session_info
-from database import engine
+from api.deps import get_db
 from models import Question, RetryQueueItem, Session
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
-
-
-def get_db():
-    """每个请求一个 SQLModel Session（单 worker + SQLite，随请求关闭）。"""
-    with DBSession(engine) as db:
-        yield db
 
 
 class CreateSessionRequest(BaseModel):
