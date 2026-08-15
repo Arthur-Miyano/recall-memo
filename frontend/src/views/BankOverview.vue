@@ -9,9 +9,13 @@
 import { reactive, ref, computed, onMounted } from 'vue'
 import { bankOverview } from '../mock/bank'
 import { getBankOverview, postBankFocus } from '../api'
+import { getStatsPerQuestion } from '../api/bank'
 
 // reactive 深拷贝，圈选状态可本地切换；真实数据到位后整体替换
 const bank = reactive(JSON.parse(JSON.stringify(bankOverview)))
+
+// 题格悬停 tooltip 用的完整题干（bank/overview 的 tip 是截断版，题格小看不出是哪道题）
+const stemMap = ref({})
 
 // mock 数据没有 stack key，按名字补一个（真实数据自带 key）
 const NAME2KEY = { Python: 'python', Agent: 'agent', 'Vue 3': 'vue3' }
@@ -36,6 +40,13 @@ onMounted(async () => {
     bank.stacks = d.stacks
   } catch (e) {
     console.warn('[bank] 获取题库总览失败，回退 mock 数据：', e.message)
+  }
+  // 完整题干单独拉取，失败只影响悬停 tooltip，不影响主界面
+  try {
+    const perQ = await getStatsPerQuestion()
+    stemMap.value = Object.fromEntries(perQ.items.map(q => [q.question_id, q.stem]))
+  } catch (e) {
+    console.warn('[bank] 逐题题干获取失败（仅影响题格悬停提示）：', e.message)
   }
 })
 
@@ -98,6 +109,7 @@ async function toggleStar(stack, group) {
               v-for="(c, ci) in g.cells"
               :key="c.question_id ?? ci"
               :class="{ done: c.status === 'done', weak: c.status === 'weak' }"
+              :title="stemMap[c.question_id] || c.tip"
             ><span class="tip">{{ c.tip }}</span></div>
           </div>
         </div>

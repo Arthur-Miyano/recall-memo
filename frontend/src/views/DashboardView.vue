@@ -4,7 +4,7 @@
 // 数据流（真实接口，任一失败回退 mock/dashboard.js 并 console.warn）：
 //   GET /api/stats/overview     —— 各栈正确率、覆盖度
 //   GET /api/stats/daily?days=N —— 日历热力（28 天）与 7 天趋势、连续打卡
-//   GET /api/bank/overview      —— 知识图谱节点状态 + 今日建议
+//   GET /api/bank/overview      —— 知识图谱小卡片概览计数 + 今日建议
 // 放大视图（点击卡片打开纸张 modal，数据流见 api/bank.js）：
 //   每日记录 → /api/stats/daily-detail?days=30（逐日明细）+ /api/stats/daily?days=30（30 天热力）
 //   趋势     → /api/stats/daily?days=30（成功/失败双色阶梯折线）
@@ -29,10 +29,16 @@ import '../styles/dashboard.css'
 const db = ref(mockDb)
 
 const WEEKDAYS_CN = ['日', '一', '二', '三', '四', '五', '六']
-// 知识图谱根节点预设坐标（viewBox 440×320），按技术栈顺序循环取用
-const ROOT_POS = [{ x: 80, y: 70 }, { x: 320, y: 70 }, { x: 200, y: 260 }, { x: 80, y: 260 }, { x: 360, y: 260 }]
 // cell.status → 图谱节点状态
 const CELL2NODE = { done: 'mastered', weak: 'weak', todo: 'todo' }
+// 同知识点多题时的序号角标（①~⑳，超出兜底 ·n）
+const CIRCLED = ['①','②','③','④','⑤','⑥','⑦','⑧','⑨','⑩','⑪','⑫','⑬','⑭','⑮','⑯','⑰','⑱','⑲','⑳']
+// 图谱节点主标签：知识点（分组名），>8 字截断加 …；同知识点多题加圈号序号
+function kgLabel(groupName, idx, count) {
+  const base = groupName.length > 8 ? groupName.slice(0, 8) + '…' : groupName
+  if (count <= 1) return base
+  return `${base} ${idx <= 20 ? CIRCLED[idx - 1] : '·' + idx}`
+}
 
 // 卡片数据加载（首屏 + 录入成功后刷新共用）
 async function loadDashboard() {
@@ -62,7 +68,7 @@ async function loadDashboard() {
         name: name.toUpperCase(),
         pct: s.pass_rate == null ? 0 : Math.round(s.pass_rate * 100),
       })),
-      graph: buildGraph(bank),
+      stackOv: buildStackOverview(bank),
       suggestions: buildSuggestions(bank),
       settings: mockDb.settings, // 设置面板自行请求真实接口，这里仅占位
     }
@@ -72,27 +78,18 @@ async function loadDashboard() {
 }
 onMounted(loadDashboard)
 
-// 知识图谱：技术栈根节点 + 每题一个子节点（围绕根节点扇形排布）
-function buildGraph(bank) {
-  const roots = []
-  const kids = {}
-  bank.stacks.forEach((stack, si) => {
-    const pos = ROOT_POS[si % ROOT_POS.length]
-    const label = stack.name.toUpperCase()
-    roots.push({ x: pos.x, y: pos.y, label })
-    kids[label] = []
-    let i = 0
-    stack.groups.forEach(g => g.cells.forEach(c => {
-      kids[label].push({
-        x: Math.min(Math.max(pos.x - 50 + (i % 3) * 60, 20), 420),
-        y: Math.min(pos.y + 60 + Math.floor(i / 3) * 50, 310),
-        t: (c.label || c.tip.split(' · ')[0]).slice(0, 8),
-        s: CELL2NODE[c.status] || 'todo',
-      })
-      i++
+// 知识图谱小卡片（概览态）：不画节点图，每栈只统计 掌握/薄弱/未背 计数 + 完成比例
+function buildStackOverview(bank) {
+  return (bank.stacks || []).map(s => {
+    let done = 0, weak = 0, todo = 0
+    s.groups.forEach(g => g.cells.forEach(c => {
+      if (c.status === 'done') done++
+      else if (c.status === 'weak') weak++
+      else todo++
     }))
+    const total = s.total || done + weak + todo
+    return { key: s.key || s.name, label: s.name.toUpperCase(), done, weak, todo, total }
   })
-  return { roots, kids }
 }
 
 // 今日建议：薄弱（待补答/低分）优先，取前 3
@@ -124,19 +121,6 @@ const trendPath = computed(() => {
 })
 const gridLines = computed(() => Array.from({ length: db.value.trend.max + 1 }, (_, g) => g))
 
-// ---- 知识图谱：根-子连线与节点展平 ----
-const kgEdges = computed(() => {
-  const edges = []
-  db.value.graph.roots.forEach(r => {
-    (db.value.graph.kids[r.label] || []).forEach(k => edges.push({ x1: r.x, y1: r.y, x2: k.x, y2: k.y }))
-  })
-  return edges
-})
-const kgNodes = computed(() => {
-  const nodes = []
-  db.value.graph.roots.forEach(r => nodes.push(...(db.value.graph.kids[r.label] || [])))
-  return nodes
-})
 // 正确率像素柱：pct → 10 格
 function accCells(p) { return Math.round(p / 10) }
 
@@ -221,7 +205,8 @@ const perQRows = computed(() => {
 const STATUS_CN = { done: '掌握', weak: '薄弱', todo: '未背' }
 
 // ---- 放大 · 知识图谱：一次一个技术栈（Tab 切换）+ 纸墨 3D ----
-// 大画布只画当前栈：根节点居中 + 题目节点网格排布，节点点击看题干/答案/得分记录
+// 大画布只画当前栈：根节点居中 + 题目节点网格排布；节点主标签为知识点（分组名），
+// 完整题干在悬停 title 与点击详情里（174 题后题干截断已无法区分题目）
 const kgSelected = ref(null)   // 选中的 per-question 条目
 const kgStackKey = ref('')     // 当前选中的技术栈 key
 // 技术栈 Tab 数据：名称 + 掌握/总数
@@ -251,13 +236,14 @@ const kgBig = computed(() => {
   const kids = []
   const edges = []
   let i = 0
-  stack.groups.forEach(g => g.cells.forEach(c => {
+  stack.groups.forEach(g => g.cells.forEach((c, ci) => {
     const perQ = perQMap[c.question_id]
     const kid = {
       qid: c.question_id,
       x: 170 + (i % KG_COLS) * 290,
       y: 140 + Math.floor(i / KG_COLS) * 48,
-      title: perQ ? perQ.stem.slice(0, 12) : c.label,
+      title: kgLabel(g.name, ci + 1, g.cells.length),
+      stem: perQ ? perQ.stem : (c.label || g.name),
       score: perQ && perQ.latest_score != null ? `${Math.round(perQ.latest_score)}分` : '未背',
       s: CELL2NODE[c.status] || 'todo',
     }
@@ -398,26 +384,23 @@ function onImported() { loadDashboard() }
       </div>
 
       <div style="display:flex;flex-direction:column;gap:28px">
-        <!-- 知识图谱 -->
+        <!-- 知识图谱（概览态：每栈计数 + 进度，点击开放大视图看全图） -->
         <div class="db-panel db-click" @click="openModal('graph')">
           <h2>知识图谱 <span class="n">FIG.04-D</span></h2>
-          <svg class="kg" viewBox="0 0 440 320">
-            <!-- 根-子连线 -->
-            <line
-              v-for="(e, i) in kgEdges" :key="'e' + i"
-              class="lk" :x1="e.x1" :y1="e.y1" :x2="e.x2" :y2="e.y2"
-            />
-            <!-- 知识点节点（mastered/weak/todo） -->
-            <template v-for="(k, i) in kgNodes" :key="'n' + i">
-              <rect :class="'node-' + k.s" :x="k.x - 7" :y="k.y - 7" width="14" height="14" />
-              <text :x="k.x + 12" :y="k.y + 4">{{ k.t }}</text>
-            </template>
-            <!-- 技术栈根节点 -->
-            <template v-for="r in db.graph.roots" :key="'r' + r.label">
-              <rect class="root" :x="r.x - 11" :y="r.y - 11" width="22" height="22" />
-              <text class="root-label" :x="r.x" :y="r.y - 20" text-anchor="middle">{{ r.label }}</text>
-            </template>
-          </svg>
+          <div class="kg-ov">
+            <div class="kg-ov-row" v-for="s in db.stackOv" :key="s.key">
+              <div class="kg-ov-line">
+                <span class="nm">{{ s.label }}</span>
+                <span class="chips">
+                  <span class="chip m"><i></i>{{ s.done }}</span>
+                  <span class="chip w"><i></i>{{ s.weak }}</span>
+                  <span class="chip t"><i></i>{{ s.todo }}</span>
+                </span>
+                <span class="frac">{{ s.done }}/{{ s.total }}</span>
+              </div>
+              <div class="kg-ov-bar"><i :style="{ width: (s.total ? (s.done / s.total * 100) : 0) + '%' }"></i></div>
+            </div>
+          </div>
           <div class="kg-legend">
             <span><i style="background:var(--ink)"></i>掌握</span>
             <span><i style="border:1.5px dashed var(--seal)"></i>薄弱</span>
@@ -549,6 +532,7 @@ function onImported() { loadDashboard() }
                 />
                 <template v-for="k in kgBig.kids" :key="'n' + k.qid">
                   <g class="nd" @click.stop="pickNode(k)">
+                    <title>{{ k.stem }}</title>
                     <rect
                       class="node-box" :class="['node-' + k.s, { 'node-sel': kgSelected && kgSelected.question_id === k.qid }]"
                       :x="k.x - 7" :y="k.y - 7" width="14" height="14"

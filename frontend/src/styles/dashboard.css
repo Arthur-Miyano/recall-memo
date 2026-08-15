@@ -142,6 +142,24 @@
 .dm-kg-detail .q-scores b { color: var(--ink); }
 .dm-kg-detail .q-scores b.bad { color: var(--seal); }
 
+/* ---- 知识图谱小卡片：概览态（不画节点图，每栈一行计数 + 细进度条） ---- */
+/* 色块语义沿用图例：掌握=墨块 / 薄弱=红虚线框 / 未背=灰 */
+.kg-ov { display: flex; flex-direction: column; gap: 16px; margin-bottom: 14px; }
+.kg-ov-line {
+  display: flex; align-items: baseline; gap: 14px;
+  font-family: var(--mono); font-size: 11px; letter-spacing: .08em;
+}
+.kg-ov-line .nm { font-weight: 700; color: var(--ink); min-width: 72px; }
+.kg-ov-line .chips { display: inline-flex; gap: 12px; color: var(--ink-70); font-variant-numeric: tabular-nums; }
+.kg-ov-line .chip { display: inline-flex; align-items: center; gap: 5px; }
+.kg-ov-line .chip i { width: 9px; height: 9px; display: inline-block; }
+.kg-ov-line .chip.m i { background: var(--ink); }
+.kg-ov-line .chip.w i { border: 1.5px dashed var(--seal); }
+.kg-ov-line .chip.t i { background: var(--ink-12); }
+.kg-ov-line .frac { margin-left: auto; color: var(--ink-45); font-variant-numeric: tabular-nums; }
+.kg-ov-bar { height: 3px; background: var(--ink-12); margin-top: 6px; }
+.kg-ov-bar i { display: block; height: 100%; background: var(--ink); transition: width .4s var(--ease-out); }
+
 /* ---- 今日建议放大：完整清单 + 助手按钮 ---- */
 .dm-suggest { font-size: 14px; }
 .dm-suggest li { list-style: none; display: flex; gap: 12px; align-items: baseline; padding: 9px 0; border-bottom: 1px dashed var(--ink-12); }

@@ -14,19 +14,12 @@ export const dashboard = {
     { name: 'AGENT', pct: 86 },
     { name: 'VUE 3', pct: 41 },
   ],
-  // 知识图谱：根节点（技术栈）+ 子节点（知识点，mastered/weak/todo）
-  graph: {
-    roots: [
-      { x: 80,  y: 70,  label: 'PYTHON' },
-      { x: 320, y: 70,  label: 'AGENT' },
-      { x: 200, y: 260, label: 'VUE 3' },
-    ],
-    kids: {
-      'PYTHON': [ {x:40,y:150,t:'GIL',s:'weak'}, {x:130,y:160,t:'装饰器',s:'weak'}, {x:70,y:210,t:'生成器',s:'todo'} ],
-      'AGENT':  [ {x:300,y:150,t:'ReAct',s:'mastered'}, {x:360,y:180,t:'FunctionCall',s:'mastered'} ],
-      'VUE 3':  [ {x:110,y:300,t:'响应式',s:'weak'}, {x:200,y:318,t:'Pinia',s:'todo'}, {x:290,y:300,t:'Diff',s:'todo'} ],
-    },
-  },
+  // 知识图谱小卡片（概览态）：每栈 掌握/薄弱/未背 计数 + 完成比例
+  stackOv: [
+    { key: 'python', label: 'PYTHON', done: 3, weak: 2, todo: 9, total: 14 },
+    { key: 'agent',  label: 'AGENT',  done: 5, weak: 0, todo: 7, total: 12 },
+    { key: 'vue3',   label: 'VUE 3',  done: 1, weak: 1, todo: 4, total: 6 },
+  ],
   // 今日建议背诵
   suggestions: [
     { d: '9 天未练', t: 'Vue 3 响应式原理（Proxy vs defineProperty）', s: '41%' },
