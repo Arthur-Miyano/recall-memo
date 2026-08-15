@@ -10,7 +10,9 @@
 // 动效：
 //   - 入场：纸张依次掉落（.screen.active .paper 的 drop 动画 + nth-child 延迟，纯 CSS）
 //   - 拖拽：pointer 事件拖动 .paper-head，位移限制在桌面范围内（与原型边界一致）
-import { reactive, ref, onMounted } from 'vue'
+//   - 单题放大：点击题目纸张（拖拽位移 < 6px 视为点击）→ .paper-modal 全尺寸单题，
+//     三维分 / 回答对照（红·蓝标注保留）/ 遗漏列表 / 追问链，支持上/下题导航与 Esc 关闭
+import { reactive, ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { reviewReport as rv } from '../mock/review'
 import { getReview, getLatestReview } from '../api'
@@ -112,10 +114,12 @@ onMounted(async () => {
 })
 
 // 拖拽开始：记录指针相对纸张左上角的偏移，绑定 window 级 move/up
+// 位移 < 6px 视为点击：题目纸张打开单题放大（pointerdown 已 preventDefault，不会重复触发 click）
 function onDragStart(e, i) {
   const p = e.currentTarget.closest('.paper')
   const r = p.getBoundingClientRect()
   const dx = e.clientX - r.left, dy = e.clientY - r.top
+  const sx = e.clientX, sy = e.clientY   // 按下点，用于松开时区分点击/拖拽
   draggingIdx.value = i
   if (!poses[i]) poses[i] = { left: 0, top: 0 }
   const move = ev => {
@@ -125,15 +129,43 @@ function onDragStart(e, i) {
       top: Math.max(-10, Math.min(120, ev.clientY - dr.top - dy)) + 'px',
     }
   }
-  const up = () => {
+  const up = ev => {
     draggingIdx.value = -1
     window.removeEventListener('pointermove', move)
     window.removeEventListener('pointerup', up)
+    if (Math.hypot(ev.clientX - sx, ev.clientY - sy) < 6 && papers.value[i]?.kind === 'question') {
+      openZoom(papers.value[i])
+    }
   }
   window.addEventListener('pointermove', move)
   window.addEventListener('pointerup', up)
   e.preventDefault()
 }
+
+/* ---------- 单题放大（逐题报告） ---------- */
+// 只在题目纸张间导航（分析/去向纸不参与）；zoomIdx 为 questionPapers 下标（null=关闭）
+const questionPapers = computed(() => papers.value.filter(p => p.kind === 'question'))
+const zoomIdx = ref(null)
+const zoomPaper = computed(() => (zoomIdx.value === null ? null : questionPapers.value[zoomIdx.value]))
+
+function openZoom(p) {
+  const i = questionPapers.value.indexOf(p)
+  if (i >= 0) zoomIdx.value = i
+}
+function closeZoom() { zoomIdx.value = null }
+function zoomPrev() { if (zoomIdx.value > 0) zoomIdx.value-- }
+function zoomNext() { if (zoomIdx.value < questionPapers.value.length - 1) zoomIdx.value++ }
+
+function onZoomKey(e) {
+  if (zoomIdx.value === null) return
+  if (e.key === 'Escape') closeZoom()
+  else if (e.key === 'ArrowLeft') zoomPrev()
+  else if (e.key === 'ArrowRight') zoomNext()
+}
+onMounted(() => window.addEventListener('keydown', onZoomKey))
+onUnmounted(() => window.removeEventListener('keydown', onZoomKey))
+// 放大时锁定背景滚动
+watch(zoomIdx, v => { document.body.style.overflow = v === null ? '' : 'hidden' })
 // 像素条：分数 → 10 格（向下取整，与原型静态格数一致：95→9 格、90→9 格）
 function cells(v) { return Math.floor(v / 10) }
 </script>
@@ -154,8 +186,9 @@ function cells(v) { return Math.floor(v / 10) }
         class="paper"
         v-for="(p, i) in papers"
         :key="p.no"
-        :class="{ dragging: draggingIdx === i }"
+        :class="{ dragging: draggingIdx === i, 'rv-click': p.kind === 'question' }"
         :style="poses[i] ? { position: 'relative', left: poses[i].left, top: poses[i].top } : {}"
+        @click="p.kind === 'question' && openZoom(p)"
       >
         <div class="paper-head" @pointerdown="onDragStart($event, i)">
           <span class="no">{{ p.no }}</span>
@@ -196,6 +229,45 @@ function cells(v) { return Math.floor(v / 10) }
           <span class="tag" v-for="q in p.retryQuestions" :key="q">{{ q }}</span>
           <span class="iv-note">{{ p.note }}</span>
           <button class="btn" @click="router.push('/memorize')">{{ p.cta }}</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 单题放大 modal：三维分 / 你的回答·标注版标准答案对照 / 遗漏列表（fig 含追问链），上/下题导航 -->
+    <div class="pm-overlay" v-if="zoomPaper" @click.self="closeZoom">
+      <div class="pm-paper" role="dialog" aria-label="单题复盘放大查看">
+        <div class="pm-head">
+          <span class="fig">{{ zoomPaper.no }}</span>
+          <h2>单题复盘</h2>
+          <span class="score" v-if="zoomPaper.score" style="font-family:var(--mono);font-size:15px">{{ zoomPaper.score }}<small> /100</small></span>
+          <button class="pm-close" title="关闭（Esc）" @click="closeZoom">✕</button>
+        </div>
+        <div class="pm-body">
+          <div class="pm-q">{{ zoomPaper.title }}</div>
+          <span class="stamp" v-if="zoomPaper.stamp">{{ zoomPaper.stamp }}</span>
+          <div class="dims" v-if="zoomPaper.dims">
+            <div class="dim" v-for="d in zoomPaper.dims" :key="d.label">
+              {{ d.label }}<b :style="d.seal ? 'color:var(--seal)' : ''">{{ d.value }}</b>
+              <div class="pixbar">
+                <i v-for="n in 10" :key="n" :class="{ off: n > cells(d.value) }"></i>
+              </div>
+            </div>
+          </div>
+          <div class="compare">
+            <div><span class="lbl">你的回答</span>{{ zoomPaper.yourAnswer }}</div>
+            <div>
+              <span class="lbl">标准答案</span>
+              <template v-if="zoomPaper.stdSegments"><template v-for="(s, si) in zoomPaper.stdSegments" :key="si"><mark v-if="s.kind" :class="'mk-' + s.kind">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template></template><template v-else>{{ zoomPaper.stdAnswer }}</template>
+            </div>
+          </div>
+          <ul class="miss" style="margin-top:14px" v-if="zoomPaper.misses">
+            <li v-for="mm in zoomPaper.misses" :key="mm">{{ mm }}</li>
+          </ul>
+        </div>
+        <div class="pm-nav">
+          <button :disabled="zoomIdx === 0" @click="zoomPrev">← 上一题</button>
+          <span class="idx">{{ zoomIdx + 1 }} / {{ questionPapers.length }}</span>
+          <button :disabled="zoomIdx === questionPapers.length - 1" @click="zoomNext">下一题 →</button>
         </div>
       </div>
     </div>

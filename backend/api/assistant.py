@@ -1,10 +1,13 @@
 # -*- coding: utf-8 -*-
-"""智能助理对话接口：水墨螃蟹的问答后端（真实调用 LLM）。
+"""智能助理对话接口：水墨螃蟹的问答后端（真实调用 LLM），支持多会话管理。
 
-请求：{message} 自由输入，或 {quick: today|recent|all|focus|plan} 快捷指令。
-响应：{thinking: [...], reply: "..."} —— thinking 为 Agent 调用链的逐步描述（带具体数据）。
-持久化：每次问答写入 chat_messages 表（用户消息与助手回复各一条，thinking 存回复那条）；
-GET /history?limit=50 按时间正序返回历史，前端打开面板时拉取渲染。
+请求：{message} 自由输入，或 {quick: today|recent|all|focus|plan} 快捷指令；
+可选 session_id 指定会话（不带则落入最近会话，没有会话时自动建一个）。
+响应：{thinking: [...], reply: "...", session_id} —— thinking 为 Agent 调用链的逐步描述（带具体数据）。
+持久化：每次问答写入 chat_messages 表（用户消息与助手回复各一条，thinking 存回复那条），
+并刷新所属 chat_sessions 的 updated_at（首条用户消息截断为会话标题）。
+GET /history?session_id=&limit=50 按时间正序返回该会话历史（不带 session_id 兼容旧行为：全量最近 limit 条）。
+会话管理：GET/POST /sessions、DELETE /sessions/{id}。
 """
 import json
 from datetime import date, datetime, time, timedelta, timezone
@@ -18,7 +21,7 @@ from agents.base import SCORE_PASS_THRESHOLD
 from database import engine
 from llm import llm_router
 from llm.router import LLMProviderUnavailableError
-from models import ChatMessage, DailyStat, Question, QuestionFocus, Record, RetryQueueItem
+from models import ChatMessage, ChatSession, DailyStat, Question, QuestionFocus, Record, RetryQueueItem
 
 router = APIRouter(prefix="/assistant", tags=["assistant"])
 
@@ -47,6 +50,23 @@ def get_db():
 class ChatRequest(BaseModel):
     message: Optional[str] = None
     quick: Optional[str] = None  # today / recent / all / focus / plan
+    session_id: Optional[int] = None  # 指定会话；不带则用最近会话或自动新建
+
+
+def _resolve_session(db: DBSession, session_id: Optional[int]) -> ChatSession:
+    """定位本次问答所属会话：指定 id 则校验存在；否则取最近会话，没有则自动新建。"""
+    if session_id is not None:
+        sess = db.get(ChatSession, session_id)
+        if sess is None:
+            raise HTTPException(status_code=404, detail=f"会话不存在：{session_id}")
+        return sess
+    sess = db.exec(select(ChatSession).order_by(ChatSession.updated_at.desc())).first()
+    if sess is None:
+        sess = ChatSession()
+        db.add(sess)
+        db.commit()
+        db.refresh(sess)
+    return sess
 
 
 def _collect_profile(db: DBSession) -> tuple[str, list[str]]:
@@ -148,27 +168,53 @@ async def assistant_chat(req: ChatRequest, db: DBSession = Depends(get_db)):
     except LLMProviderUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     thinking.append(f"智能助理 Agent：{provider} 模型生成答复，{len(content)} 字")
-    _save_chat(db, message, content, thinking)
-    return {"thinking": thinking, "reply": content}
+    sess = _resolve_session(db, req.session_id)
+    _save_chat(db, sess, message, content, thinking)
+    return {"thinking": thinking, "reply": content, "session_id": sess.id}
 
 
-def _save_chat(db: DBSession, question: str, reply: str, thinking: list[str]) -> None:
-    """一问一答落库：用户消息与助手回复各一条，thinking（JSON 字符串）存回复那条。"""
-    db.add(ChatMessage(role="user", content=question))
-    db.add(ChatMessage(role="assistant", content=reply, thinking=json.dumps(thinking, ensure_ascii=False)))
+def _save_chat(db: DBSession, sess: ChatSession, question: str, reply: str, thinking: list[str]) -> None:
+    """一问一答落库：用户消息与助手回复各一条，thinking（JSON 字符串）存回复那条。
+
+    同时刷新会话：首条用户消息截断为标题（仅当会话还没有用户消息时），updated_at 更新为当前时间。
+    """
+    has_user_msg = db.exec(
+        select(ChatMessage.id).where(
+            ChatMessage.session_id == sess.id, ChatMessage.role == "user"
+        )
+    ).first()
+    now = datetime.now(timezone.utc)
+    db.add(ChatMessage(session_id=sess.id, role="user", content=question, created_at=now))
+    db.add(ChatMessage(
+        session_id=sess.id, role="assistant", content=reply,
+        thinking=json.dumps(thinking, ensure_ascii=False), created_at=now,
+    ))
+    if not has_user_msg:
+        sess.title = question[:24]  # 首条用户消息截断为标题
+    sess.updated_at = now
+    db.add(sess)
     db.commit()
 
 
 @router.get("/history")
-def assistant_history(limit: int = Query(default=50, ge=1, le=200), db: DBSession = Depends(get_db)):
-    """对话历史：最近 limit 条，按时间正序返回（前端打开面板时拉取渲染）。"""
-    rows = list(
-        db.exec(select(ChatMessage).order_by(ChatMessage.id.desc()).limit(limit)).all()
-    )
+def assistant_history(
+    session_id: Optional[int] = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    db: DBSession = Depends(get_db),
+):
+    """对话历史：最近 limit 条，按时间正序返回。
+
+    带 session_id 只取该会话；不带则兼容旧行为（全量最近 limit 条，跨会话）。
+    """
+    stmt = select(ChatMessage)
+    if session_id is not None:
+        stmt = stmt.where(ChatMessage.session_id == session_id)
+    rows = list(db.exec(stmt.order_by(ChatMessage.id.desc()).limit(limit)).all())
     return {
         "messages": [
             {
                 "id": m.id,
+                "session_id": m.session_id,
                 "role": m.role,
                 "content": m.content,
                 "thinking": json.loads(m.thinking) if m.thinking else None,
@@ -177,3 +223,47 @@ def assistant_history(limit: int = Query(default=50, ge=1, le=200), db: DBSessio
             for m in reversed(rows)
         ]
     }
+
+
+# ---------- 会话管理 ----------
+
+def _session_payload(db: DBSession, s: ChatSession) -> dict:
+    """会话列表项：id、标题、更新时间、消息数。"""
+    count = len(db.exec(select(ChatMessage.id).where(ChatMessage.session_id == s.id)).all())
+    return {
+        "id": s.id,
+        "title": s.title,
+        "created_at": s.created_at.isoformat(),
+        "updated_at": s.updated_at.isoformat(),
+        "message_count": count,
+    }
+
+
+@router.get("/sessions")
+def list_sessions(db: DBSession = Depends(get_db)):
+    """会话列表：按 updated_at 倒序（最近活跃的在前）。"""
+    sessions = list(db.exec(select(ChatSession).order_by(ChatSession.updated_at.desc())).all())
+    return {"sessions": [_session_payload(db, s) for s in sessions]}
+
+
+@router.post("/sessions")
+def create_session(db: DBSession = Depends(get_db)):
+    """新建空会话。"""
+    sess = ChatSession()
+    db.add(sess)
+    db.commit()
+    db.refresh(sess)
+    return _session_payload(db, sess)
+
+
+@router.delete("/sessions/{session_id}")
+def delete_session(session_id: int, db: DBSession = Depends(get_db)):
+    """删除会话及其全部消息。"""
+    sess = db.get(ChatSession, session_id)
+    if sess is None:
+        raise HTTPException(status_code=404, detail=f"会话不存在：{session_id}")
+    for m in db.exec(select(ChatMessage).where(ChatMessage.session_id == session_id)).all():
+        db.delete(m)
+    db.delete(sess)
+    db.commit()
+    return {"ok": True, "deleted": session_id}

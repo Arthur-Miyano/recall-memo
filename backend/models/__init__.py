@@ -4,9 +4,9 @@ from .question import Question, QuestionGroup
 from .session import Session
 from .record import Record, DailyStat
 from .extras import QuestionFocus, RetryQueueItem
-from .chat import ChatMessage
+from .chat import ChatMessage, ChatSession
 
 __all__ = [
     "Question", "QuestionGroup", "Session", "Record", "DailyStat",
-    "QuestionFocus", "RetryQueueItem", "ChatMessage",
+    "QuestionFocus", "RetryQueueItem", "ChatMessage", "ChatSession",
 ]

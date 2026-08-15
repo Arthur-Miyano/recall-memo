@@ -174,6 +174,7 @@ async function openModal(key) {
     } else if (key === 'graph') {
       const [bank, perQ] = await Promise.all([getBankOverview(), getStatsPerQuestion()])
       modalData.value = { bank, perQMap: Object.fromEntries(perQ.items.map(q => [q.question_id, q])) }
+      kgStackKey.value = defaultKgStack(bank) // 打开时默认落在掌握最少的栈
     } else if (key === 'suggest') {
       const [perQ, retry] = await Promise.all([getStatsPerQuestion(), getRetryQueue()])
       modalData.value = { perQ, retry }
@@ -219,41 +220,80 @@ const perQRows = computed(() => {
 })
 const STATUS_CN = { done: '掌握', weak: '薄弱', todo: '未背' }
 
-// ---- 放大 · 知识图谱：大画布，每栈一列，节点带题名与最近得分，点击看详情 ----
-const kgSelected = ref(null) // 选中的 per-question 条目
+// ---- 放大 · 知识图谱：一次一个技术栈（Tab 切换）+ 纸墨 3D ----
+// 大画布只画当前栈：根节点居中 + 题目节点网格排布，节点点击看题干/答案/得分记录
+const kgSelected = ref(null)   // 选中的 per-question 条目
+const kgStackKey = ref('')     // 当前选中的技术栈 key
+// 技术栈 Tab 数据：名称 + 掌握/总数
+const kgTabs = computed(() =>
+  (modalData.value?.bank.stacks || []).map(s => ({
+    key: s.key, label: s.name.toUpperCase(), done: s.done, total: s.total,
+  }))
+)
+// 默认选中「掌握数最少」的栈：图谱放大用于定位短板，先落在最弱的栈上；并列则取第一个
+function defaultKgStack(bank) {
+  const stacks = bank?.stacks || []
+  if (!stacks.length) return ''
+  return stacks.reduce((a, b) => (b.done < a.done ? b : a)).key
+}
+function switchKgStack(key) {
+  if (kgStackKey.value === key) return
+  kgStackKey.value = key
+  kgSelected.value = null      // 切栈后清掉上一栈的节点详情
+  kgTilt.value = { rx: 0, ry: 0 }
+}
+const KG_COLS = 3              // 单栈画布题目节点列数
 const kgBig = computed(() => {
-  const bank = modalData.value?.bank
   const perQMap = modalData.value?.perQMap || {}
-  if (!bank) return { roots: [], kids: [], edges: [], boxH: 300 }
-  const roots = []
+  const stack = (modalData.value?.bank.stacks || []).find(s => s.key === kgStackKey.value)
+  if (!stack) return { root: null, kids: [], edges: [], boxH: 300 }
+  const CX = 460, ROOT_Y = 52  // 根节点：画布顶部居中
   const kids = []
   const edges = []
-  const n = Math.max(bank.stacks.length, 1)
-  let boxH = 300
-  bank.stacks.forEach((stack, si) => {
-    const cx = 920 * (si + 0.5) / n  // 列中心
-    roots.push({ x: cx, y: 44, label: stack.name.toUpperCase() })
-    let i = 0
-    stack.groups.forEach(g => g.cells.forEach(c => {
-      const perQ = perQMap[c.question_id]
-      const kid = {
-        qid: c.question_id,
-        x: cx - 80, y: 104 + i * 40,
-        title: perQ ? perQ.stem.slice(0, 12) : c.label,
-        score: perQ && perQ.latest_score != null ? `${Math.round(perQ.latest_score)}分` : '未背',
-        s: CELL2NODE[c.status] || 'todo',
-      }
-      kids.push(kid)
-      edges.push({ x1: cx, y1: 44, x2: kid.x, y2: kid.y })
-      i++
-    }))
-    boxH = Math.max(boxH, 104 + i * 40 + 16)
-  })
-  return { roots, kids, edges, boxH }
+  let i = 0
+  stack.groups.forEach(g => g.cells.forEach(c => {
+    const perQ = perQMap[c.question_id]
+    const kid = {
+      qid: c.question_id,
+      x: 170 + (i % KG_COLS) * 290,
+      y: 140 + Math.floor(i / KG_COLS) * 48,
+      title: perQ ? perQ.stem.slice(0, 12) : c.label,
+      score: perQ && perQ.latest_score != null ? `${Math.round(perQ.latest_score)}分` : '未背',
+      s: CELL2NODE[c.status] || 'todo',
+    }
+    kids.push(kid)
+    edges.push({ x1: CX, y1: ROOT_Y, x2: kid.x, y2: kid.y })
+    i++
+  }))
+  const boxH = Math.max(300, 140 + Math.ceil(i / KG_COLS) * 48 + 24)
+  return { root: { x: CX, y: ROOT_Y, label: stack.name.toUpperCase() }, kids, edges, boxH }
 })
 function pickNode(kid) {
   kgSelected.value = modalData.value?.perQMap?.[kid.qid] || null
 }
+
+// ---- 纸墨 3D：画布平面基础倾斜 rotateX(10deg)，光标移动时叠加 ±4deg 视差 ----
+// 纯 CSS transform（perspective + drop-shadow 偏移投影），不引入 3D 库；prefers-reduced-motion 时禁用
+const kgStageEl = ref(null)
+const kgTilt = ref({ rx: 0, ry: 0 })  // 视差偏移（叠加在基础倾斜上）
+const kgReduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+const KG_BASE_TILT = 10               // 基础倾斜角度（8~12deg 区间的克制取值）
+function kgParallax(e) {
+  if (kgReduceMotion) return
+  const el = kgStageEl.value
+  if (!el) return
+  const r = el.getBoundingClientRect()
+  const nx = (e.clientX - r.left) / r.width - 0.5   // -0.5 ~ 0.5
+  const ny = (e.clientY - r.top) / r.height - 0.5
+  kgTilt.value = { rx: -ny * 8, ry: nx * 8 }        // 各方向 ±4deg 内
+}
+function kgParallaxEnd() { kgTilt.value = { rx: 0, ry: 0 } }
+const kgPlaneStyle = computed(() => {
+  if (kgReduceMotion) return {}
+  const rx = (KG_BASE_TILT + kgTilt.value.rx).toFixed(2)
+  const ry = kgTilt.value.ry.toFixed(2)
+  return { transform: `rotateX(${rx}deg) rotateY(${ry}deg)` }
+})
 
 // ---- 放大 · 今日建议：全部薄弱题（按分升序）+ 待补答队列，各附一句理由 ----
 const suggestWeak = computed(() => {
@@ -487,28 +527,43 @@ function onImported() { loadDashboard() }
           </table>
         </template>
 
-        <!-- 放大 · 知识图谱：大画布 + 节点详情 -->
+        <!-- 放大 · 知识图谱：技术栈 Tab（一次一栈）+ 纸墨 3D 画布 + 节点详情 -->
         <template v-else-if="modalKey === 'graph'">
-          <svg class="dm-kg" :viewBox="`0 0 920 ${kgBig.boxH}`" style="width:100%;height:auto">
-            <line
-              v-for="(e, i) in kgBig.edges" :key="'e' + i"
-              class="lk" :x1="e.x1" :y1="e.y1" :x2="e.x2" :y2="e.y2"
-            />
-            <template v-for="k in kgBig.kids" :key="'n' + k.qid">
-              <g class="nd" @click.stop="pickNode(k)">
-                <rect
-                  class="node-box" :class="['node-' + k.s, { 'node-sel': kgSelected && kgSelected.question_id === k.qid }]"
-                  :x="k.x - 7" :y="k.y - 7" width="14" height="14"
+          <!-- 技术栈 Tab：胶囊风格，带 掌握/总数 -->
+          <div class="kg-tabs">
+            <button
+              v-for="t in kgTabs" :key="t.key"
+              class="kg-tab" :class="{ active: t.key === kgStackKey }"
+              @click="switchKgStack(t.key)"
+            >
+              {{ t.label }}<span class="kg-tab-num">{{ t.done }}/{{ t.total }}</span>
+            </button>
+          </div>
+          <!-- 3D 舞台：perspective 在舞台，平面基础倾斜 + 光标视差（reduced-motion 禁用） -->
+          <div ref="kgStageEl" class="dm-kg-stage" @mousemove="kgParallax" @mouseleave="kgParallaxEnd">
+            <div class="dm-kg-plane" :style="kgPlaneStyle">
+              <svg :key="kgStackKey" class="dm-kg dm-kg-in" :viewBox="`0 0 920 ${kgBig.boxH}`" style="width:100%;height:auto">
+                <line
+                  v-for="(e, i) in kgBig.edges" :key="'e' + i"
+                  class="lk" :x1="e.x1" :y1="e.y1" :x2="e.x2" :y2="e.y2"
                 />
-                <text :x="k.x + 14" :y="k.y - 1" font-size="11">{{ k.title }}</text>
-                <text class="n-score" :x="k.x + 14" :y="k.y + 12">{{ k.score }}</text>
-              </g>
-            </template>
-            <template v-for="r in kgBig.roots" :key="'r' + r.label">
-              <rect class="root" :x="r.x - 12" :y="r.y - 12" width="24" height="24" />
-              <text class="root-label" :x="r.x" :y="r.y - 22" text-anchor="middle">{{ r.label }}</text>
-            </template>
-          </svg>
+                <template v-for="k in kgBig.kids" :key="'n' + k.qid">
+                  <g class="nd" @click.stop="pickNode(k)">
+                    <rect
+                      class="node-box" :class="['node-' + k.s, { 'node-sel': kgSelected && kgSelected.question_id === k.qid }]"
+                      :x="k.x - 7" :y="k.y - 7" width="14" height="14"
+                    />
+                    <text :x="k.x + 14" :y="k.y - 1" font-size="11">{{ k.title }}</text>
+                    <text class="n-score" :x="k.x + 14" :y="k.y + 12">{{ k.score }}</text>
+                  </g>
+                </template>
+                <template v-if="kgBig.root">
+                  <rect class="root" :x="kgBig.root.x - 12" :y="kgBig.root.y - 12" width="24" height="24" />
+                  <text class="root-label" :x="kgBig.root.x" :y="kgBig.root.y - 22" text-anchor="middle">{{ kgBig.root.label }}</text>
+                </template>
+              </svg>
+            </div>
+          </div>
           <div class="kg-legend">
             <span><i style="background:var(--ink)"></i>掌握</span>
             <span><i style="border:1.5px dashed var(--seal)"></i>薄弱</span>

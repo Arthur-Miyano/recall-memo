@@ -16,6 +16,17 @@ async function request(path, { method = 'GET', body } = {}) {
   return resp.json()
 }
 
+// multipart 版本（文件上传）：与 request 同款错误处理，但不设 Content-Type（浏览器自动生成 boundary）
+async function requestForm(path, formData) {
+  const resp = await fetch(BASE_URL + path, { method: 'POST', body: formData })
+  if (!resp.ok) {
+    let detail = resp.statusText
+    try { detail = (await resp.json()).detail || detail } catch { /* 非 JSON 错误体 */ }
+    throw new Error(`POST ${path} 失败（${resp.status}）：${detail}`)
+  }
+  return resp.json()
+}
+
 /* ---------- 仪表盘放大视图 ---------- */
 // 近 N 天逐日答题明细（只含答题日）：每日背诵记录放大视图
 export const getStatsDailyDetail = (days = 30) => request(`/api/stats/daily-detail?days=${days}`)
@@ -35,3 +46,10 @@ export const postAssistantPlan = () =>
 // {text, dedupe} → {imported, skipped, enriched, errors}
 export const postBankImport = (text, dedupe = true) =>
   request('/api/bank/import', { method: 'POST', body: { text, dedupe } })
+// 文件上传（PDF 由后端 pypdf 提取，md/txt/json 读文本）→ 同上返回结构
+export const postBankImportFile = (file, dedupe = true) => {
+  const form = new FormData()
+  form.append('file', file)
+  form.append('dedupe', dedupe ? 'true' : 'false')
+  return requestForm('/api/bank/import-file', form)
+}

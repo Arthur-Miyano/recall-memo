@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 """题库总览接口：技术栈 → 知识点两级分组 + 背诵状态格 + 圈选重点背诵 + 录入题库。"""
-from fastapi import APIRouter, Depends
+import io
+from typing import Optional
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlmodel import Session as DBSession, select
 
@@ -135,6 +138,7 @@ def bank_focus(req: FocusRequest, db: DBSession = Depends(get_db)):
 class ImportRequest(BaseModel):
     text: str  # 原始文本或 JSON 数组字符串
     dedupe: bool = True  # 是否按题干相似度去重（阈值见 importer.SIMILARITY_THRESHOLD）
+    max_questions: Optional[int] = None  # 最多录入题数，None=不限（便于测试与分批导入）
 
 
 def _title_of(stem: str) -> str:
@@ -143,26 +147,20 @@ def _title_of(stem: str) -> str:
     return stem if len(stem) <= 20 else stem[:19] + "…"
 
 
-@router.post("/import")
-async def bank_import(req: ImportRequest, db: DBSession = Depends(get_db)):
-    """录入题库：解析 → LLM 提取/补全 → 相似度去重 → 入库。
+async def _run_import(text: str, dedupe: bool, db: DBSession,
+                      max_questions: Optional[int] = None) -> dict:
+    """录入清洗共用管线（/import 与 /import-file 共用）：
 
-    流程：
-    1. 解析 text（JSON 数组直接解析；纯文本按 空行/--- 切分，识别"答案：""技术栈：""知识点："行）；
-    2. 规则解析不出的片段，一次 LLM 调用做结构化提取；
-    3. 缺答案/缺技术栈的题，一次 LLM 调用批量补全（tech_stack 限定 python/agent/vue3）；
-    4. dedupe=true 时，与库内题目 + 本批次已接受题逐一算题干相似度，≥ 阈值跳过；
-    5. 通过的题插入 Question 表（tags=[技术栈, 知识点]，与种子脚本约定一致）。
-
-    LLM 不可用时降级：能解析完整的题照常入库，缺答案的进 errors。
+    解析 → LLM 提取/补全 → 相似度去重 → 入库。
+    max_questions 在规整字段后截断条目数（同时限制 LLM 补全的规模），方便测试与分批导入。
     """
     result: dict = {"imported": [], "skipped": [], "enriched": [], "errors": []}
-    if not req.text.strip():
+    if not text.strip():
         result["errors"].append({"title": "（空输入）", "reason": "没有可解析的内容"})
         return result
 
     # 1. 规则解析
-    items, leftovers = importer.parse_text(req.text)
+    items, leftovers = importer.parse_text(text)
 
     # 2. LLM 结构化提取兜底（解析不出的片段）
     if leftovers:
@@ -189,6 +187,10 @@ async def bank_import(req: ImportRequest, db: DBSession = Depends(get_db)):
         it["tech_stack"] = stack or ""  # 无法识别的留空，交给补全
         valid.append(it)
 
+    # max_questions：只处理前 N 题（截断在 LLM 补全之前，避免不必要的调用）
+    if max_questions is not None and max_questions >= 0:
+        valid = valid[:max_questions]
+
     # 4. LLM 批量补全缺 answer / tech_stack 的题
     try:
         enrich_marks = await importer.llm_enrich(valid)
@@ -209,7 +211,7 @@ async def bank_import(req: ImportRequest, db: DBSession = Depends(get_db)):
             continue
         if not it.get("tech_stack"):
             it["tech_stack"] = stack  # LLM 也没给出分类时兜底 python
-        if req.dedupe:
+        if dedupe:
             best_stem, best_sim = None, 0.0
             for other in existing_stems + accepted_stems:
                 sim = importer.stem_similarity(it["stem"], other)
@@ -239,3 +241,65 @@ async def bank_import(req: ImportRequest, db: DBSession = Depends(get_db)):
             result["enriched"].append({"title": title, "fields": mark["fields"]})
     db.commit()
     return result
+
+
+@router.post("/import")
+async def bank_import(req: ImportRequest, db: DBSession = Depends(get_db)):
+    """录入题库（粘贴文本/JSON）：走共用清洗管线 _run_import。
+
+    流程：
+    1. 解析 text（JSON 数组直接解析；纯文本按 空行/--- 切分，识别"答案：""技术栈：""知识点："行）；
+    2. 规则解析不出的片段，一次 LLM 调用做结构化提取；
+    3. 缺答案/缺技术栈的题，一次 LLM 调用批量补全（tech_stack 限定 python/agent/vue3）；
+    4. dedupe=true 时，与库内题目 + 本批次已接受题逐一算题干相似度，≥ 阈值跳过；
+    5. 通过的题插入 Question 表（tags=[技术栈, 知识点]，与种子脚本约定一致）。
+
+    LLM 不可用时降级：能解析完整的题照常入库，缺答案的进 errors。
+    """
+    return await _run_import(req.text, req.dedupe, db, req.max_questions)
+
+
+# ---------- 文件上传录入（PDF / md / txt / json） ----------
+
+# 按文本读取的扩展名；.pdf 走 pypdf 提取
+_TEXT_EXTS = {".md", ".txt", ".json"}
+
+
+def _extract_pdf_text(raw: bytes) -> str:
+    """pypdf 提取 PDF 全文（逐页拼接）。失败/无文本抛 HTTPException 400。"""
+    from pypdf import PdfReader  # 延迟导入：PDF 是可选路径，不影响文本导入
+    try:
+        reader = PdfReader(io.BytesIO(raw))
+        pages = [(page.extract_text() or "") for page in reader.pages]
+    except Exception as exc:  # 损坏/加密/非 PDF 内容等统一归为无法解析
+        raise HTTPException(status_code=400, detail=f"PDF 解析失败：{exc}")
+    text = "\n\n".join(p for p in pages if p.strip())
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="PDF 中未提取到文本（可能是扫描件或图片型 PDF）")
+    return text
+
+
+@router.post("/import-file")
+async def bank_import_file(
+    file: UploadFile = File(...),  # 上传文件：.pdf 用 pypdf 提取，.md/.txt/.json 读文本
+    dedupe: bool = Form(True),
+    max_questions: Optional[int] = Form(None),  # 最多录入题数，None=不限
+    db: DBSession = Depends(get_db),
+):
+    """文件录入题库：提取文本后走与 /import 完全相同的清洗管线 _run_import。"""
+    import os
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in _TEXT_EXTS and ext != ".pdf":
+        raise HTTPException(status_code=400, detail=f"不支持的文件类型 {ext or '（无扩展名）'}，仅支持 .pdf / .md / .txt / .json")
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="文件为空")
+    if ext == ".pdf":
+        text = _extract_pdf_text(raw)
+    else:
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            raise HTTPException(status_code=400, detail="文本文件解码失败（请使用 UTF-8 编码）")
+    return await _run_import(text, dedupe, db, max_questions)
+

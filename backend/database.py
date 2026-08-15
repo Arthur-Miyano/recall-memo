@@ -15,6 +15,7 @@ def init_db() -> None:
 
     SQLModel.metadata.create_all(engine)
     migrate_records_annotated_answer()
+    migrate_chat_messages_session_id()
     backfill_retry_queue()
 
 
@@ -24,6 +25,32 @@ def migrate_records_annotated_answer() -> None:
         cols = {row[1] for row in conn.execute(text("PRAGMA table_info(records)"))}
         if "annotated_answer" not in cols:
             conn.execute(text("ALTER TABLE records ADD COLUMN annotated_answer TEXT"))
+
+
+def migrate_chat_messages_session_id() -> None:
+    """轻量迁移：旧库的 chat_messages 表补 session_id 列，历史消息归入"默认对话"。
+
+    与 migrate_records_annotated_answer 同一模式：PRAGMA 查列 + ALTER TABLE 补列；
+    补列后若存在 session_id 为 NULL 的旧消息，则建一个"默认对话"把它们全部归入。
+    """
+    with engine.begin() as conn:
+        cols = {row[1] for row in conn.execute(text("PRAGMA table_info(chat_messages)"))}
+        if "session_id" not in cols:
+            conn.execute(text("ALTER TABLE chat_messages ADD COLUMN session_id INTEGER REFERENCES chat_sessions(id)"))
+        orphan = conn.execute(text("SELECT COUNT(*) FROM chat_messages WHERE session_id IS NULL")).scalar()
+        if orphan:
+            # 旧消息时间范围作为默认对话的创建/更新时间，保证列表排序合理
+            first_ts, last_ts = conn.execute(
+                text("SELECT MIN(created_at), MAX(created_at) FROM chat_messages WHERE session_id IS NULL")
+            ).one()
+            cur = conn.execute(
+                text('INSERT INTO chat_sessions (title, created_at, updated_at) VALUES (:t, :c, :u)'),
+                {"t": "默认对话", "c": first_ts, "u": last_ts},
+            )
+            conn.execute(
+                text("UPDATE chat_messages SET session_id = :sid WHERE session_id IS NULL"),
+                {"sid": cur.lastrowid},
+            )
 
 
 def backfill_retry_queue() -> None:

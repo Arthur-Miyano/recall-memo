@@ -249,6 +249,10 @@ body::before {
   padding:26px 28px; margin-bottom:28px; position:relative;
 }
 .paper.dragging { box-shadow: 9px 12px 0 rgba(25,25,25,.2); z-index: var(--z-stamp); cursor:grabbing; }
+/* 可点击放大的题目纸张：hover 微浮起提示（拖拽/点击双交互，位移<6px 为点击） */
+.paper.rv-click { cursor:pointer; transition: box-shadow .2s, transform .2s; }
+.paper.rv-click:hover { box-shadow:6px 8px 0 rgba(25,25,25,.2); transform:translate(-1px,-1px); }
+.paper.rv-click .paper-head { cursor:pointer; }
 .paper .paper-head {
   display:flex; align-items:baseline; gap:14px; margin-bottom:16px;
   border-bottom:1px solid var(--ink); padding-bottom:12px; cursor:grab;
@@ -450,10 +454,60 @@ body::before {
 }
 .chat-input button { border:none; border-left:1px solid var(--ink); background: var(--ink); color: var(--paper); font-family: var(--mono); font-size:12px; padding:0 18px; cursor:pointer; }
 
+/* 会话管理：头部「≡ 对话」按钮 + 面板内抽屉覆盖层（纸墨风、mono 小字标注） */
+.chat-head .sess-btn {
+  font-family: var(--mono); font-size:11px; letter-spacing:.08em; cursor:pointer;
+  border:1px solid var(--ink-45); background:transparent; color: var(--ink-70);
+  padding:3px 9px; flex:none; align-self:center; transition: all .15s;
+}
+.chat-head .sess-btn:hover { border-color: var(--ink); color: var(--ink); }
+.chat-sessions {
+  position:absolute; inset:0; z-index:2; display:flex; flex-direction:column;
+  background: var(--paper-hi); animation: screenIn .25s var(--ease-out);
+}
+.chat-sessions-head {
+  display:flex; align-items:center; justify-content:space-between;
+  padding:12px 18px; border-bottom:1px solid var(--ink);
+  font-family: var(--mono); font-size:10px; letter-spacing:.14em; color: var(--ink-45);
+}
+.chat-sessions-head button {
+  font-family: var(--mono); font-size:11px; letter-spacing:.06em; cursor:pointer;
+  border:1px solid var(--ink); background: var(--ink); color: var(--paper); padding:4px 12px;
+  transition: opacity .15s;
+}
+.chat-sessions-head button:hover { opacity:.85; }
+.chat-sessions-list { flex:1; overflow-y:auto; padding:8px 0; }
+.chat-sess {
+  position:relative; padding:9px 40px 9px 18px; cursor:pointer;
+  border-left:2px solid transparent; transition: background .15s;
+}
+.chat-sess:hover { background: var(--ink-12); }
+.chat-sess.active { border-left-color: var(--ink); background: var(--ink-12); }
+.chat-sess .t {
+  display:block; font-size:13px; color: var(--ink);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.chat-sess .meta { display:block; font-family: var(--mono); font-size:10px; letter-spacing:.1em; color: var(--ink-45); margin-top:3px; }
+.chat-sess .del {
+  position:absolute; right:12px; top:50%; transform:translateY(-50%);
+  font-family: var(--mono); font-size:11px; color: var(--ink-45);
+  opacity:0; transition: opacity .15s, color .15s; padding:4px;
+}
+.chat-sess:hover .del { opacity:1; }
+.chat-sess .del:hover { color: var(--seal); }
+.chat-sess-empty {
+  font-family: var(--mono); font-size:11px; letter-spacing:.1em; color: var(--ink-25);
+  text-align:center; padding:36px 0;
+}
+
 /* ============ 屏幕：记忆训练流程 ============ */
 .mem-stage { max-width:960px; margin:0 auto; }
 .mem-q { margin-bottom:22px; }
 .mem-q .paper-head { cursor:default; }
+/* 可点击放大：本体样式不变，hover 微浮起 + 右下角 mono 提示 */
+.mem-q.mem-click { cursor:pointer; transition: box-shadow .2s, transform .2s; }
+.mem-q.mem-click:hover { box-shadow:5px 6px 0 rgba(25,25,25,.18); transform:translate(-1px,-1px); }
+.mem-q.mem-click .paper-head { cursor:pointer; }
 .mem-q .answer { font-size:14.5px; line-height:2; color: var(--ink); }
 .mem-q .answer .lbl { font-family: var(--mono); font-size:10px; letter-spacing:.14em; color: var(--ink-45); display:block; margin-bottom:6px; }
 .mem-actions { display:flex; gap:14px; align-items:center; margin-top:26px; }
@@ -513,3 +567,55 @@ body::before {
 .bank-legend i { width:12px; height:12px; display:inline-block; vertical-align:-2px; margin-right:6px; border:1px solid var(--ink-45); }
 .bank-legend .d { background: var(--ink); border-color: var(--ink); }
 .bank-legend .w { background: repeating-linear-gradient(45deg, transparent 0 3px, rgba(192,57,43,.55) 3px 5px); border-color: var(--seal); }
+
+/* ============ 单题放大 modal（.paper-modal，记忆训练 & 复盘报告共用） ============
+   与 dashboard.css 的 dm-* 同语言：半透纸色遮罩 + 墨边纸面 + 投影 + screenIn/drop；
+   增加 .pm-nav 上一题/下一题导航条。题干用宋体大字，正文行距放宽，缓解长题阅读疲劳。 */
+.pm-overlay {
+  position:fixed; inset:0; z-index:90;
+  background: rgba(237,239,234,.88);          /* 半透纸色 */
+  display:flex; align-items:center; justify-content:center;
+  padding:4vh 4vw; animation: screenIn .3s var(--ease-out);
+}
+.pm-paper {
+  background: var(--paper-hi); border:1px solid var(--ink);
+  box-shadow: 9px 12px 0 rgba(25,25,25,.2);
+  width:min(860px,100%); max-height:88vh;
+  display:flex; flex-direction:column; padding:26px 30px 20px;
+  animation: drop .5s var(--ease-snap) both;
+}
+.pm-head {
+  display:flex; align-items:baseline; gap:16px;
+  border-bottom:1px solid var(--ink); padding-bottom:12px; margin-bottom:18px;
+}
+.pm-head .fig { font-family: var(--mono); font-size:11px; color: var(--ink-25); letter-spacing:.12em; }
+.pm-head h2 { font-family: var(--serif); font-weight:600; font-size:20px; flex:1; }
+.pm-close {
+  font-family: var(--mono); font-size:14px; line-height:1;
+  background:none; border:1px solid var(--ink-45); color: var(--ink-70);
+  width:30px; height:30px; cursor:pointer; flex:none;
+  transition: background .15s, color .15s, border-color .15s;
+}
+.pm-close:hover { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.pm-body { overflow-y:auto; flex:1; min-height:0; }
+/* 题干：宋体大字 */
+.pm-q {
+  font-family: var(--serif); font-weight:600;
+  font-size:clamp(20px,2.3vw,27px); line-height:1.75; margin-bottom:20px;
+}
+/* 答案区：比卡片更宽松的阅读排版 */
+.pm-answer { font-size:15px; line-height:2.05; color: var(--ink); white-space:pre-wrap; }
+.pm-answer .lbl { font-family: var(--mono); font-size:10px; letter-spacing:.14em; color: var(--ink-45); display:block; margin-bottom:6px; }
+/* 上/下题导航条 */
+.pm-nav {
+  display:flex; align-items:center; justify-content:space-between; gap:12px;
+  border-top:1px dashed var(--ink-25); padding-top:14px; margin-top:20px;
+}
+.pm-nav button {
+  font-family: var(--mono); font-size:12px; letter-spacing:.06em; cursor:pointer;
+  border:1px solid var(--ink-45); background:transparent; color: var(--ink-70);
+  padding:7px 18px; transition: all .15s;
+}
+.pm-nav button:hover:not(:disabled) { border-color: var(--ink); color: var(--ink); }
+.pm-nav button:disabled { opacity:.35; cursor:default; }
+.pm-nav .idx { font-family: var(--mono); font-size:10px; letter-spacing:.14em; color: var(--ink-45); }

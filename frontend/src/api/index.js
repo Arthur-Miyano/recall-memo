@@ -26,8 +26,13 @@ export const postLlmSettings = (payload) =>
   request('/api/settings/llm', { method: 'POST', body: payload })
 export const assistantChat = (payload) =>
   request('/api/assistant/chat', { method: 'POST', body: payload })
-export const getAssistantHistory = (limit = 50) =>
-  request(`/api/assistant/history?limit=${limit}`)
+export const getAssistantHistory = (limit = 50, sessionId = null) =>
+  request(`/api/assistant/history?limit=${limit}${sessionId != null ? `&session_id=${sessionId}` : ''}`)
+export const getAssistantSessions = () => request('/api/assistant/sessions')
+export const createAssistantSession = () =>
+  request('/api/assistant/sessions', { method: 'POST' })
+export const deleteAssistantSession = (id) =>
+  request(`/api/assistant/sessions/${id}`, { method: 'DELETE' })
 
 /* ---------- 会话流程（记忆训练 / 面试 / 回忆） ---------- */
 export const createSession = (mode, stack, count) =>

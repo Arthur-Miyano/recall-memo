@@ -2,8 +2,10 @@
 // 全局组件：水墨小螃蟹（智能助理入口）+ 对话面板
 // 职责：常驻页面、原地挥钳待机；点击开合对话面板（5 个快捷提示词 + 自由输入 + 思考过程展示）；
 //       可按住拖动到任意位置（位置存 localStorage），待机时偶尔吐泡泡，拖动结束 / 收到答复时吐一串
-// 数据流：POST /api/assistant/chat（{message} 或 {quick}）→ {thinking, reply}，每次问答后端落库；
-//         GET  /api/assistant/history —— 面板首次打开时拉取最近 50 条历史渲染（思考过程随消息展示）；
+// 数据流：POST /api/assistant/chat（{message|quick, session_id?}）→ {thinking, reply, session_id}，每次问答后端落库；
+//         GET  /api/assistant/sessions + POST /sessions + DELETE /sessions/{id} —— 多会话管理（头部「≡ 对话」抽屉）；
+//         GET  /api/assistant/history?session_id= —— 切换会话 / 首次打开时拉取该会话最近 50 条渲染；
+//         当前会话 id 存 localStorage（recall-chat-session），重开面板恢复；
 //         请求失败回退 mock/assistant.js 演示回复（console.warn，不打断对话、不白屏）
 // 动效：
 //   - 待机：crabSway 身体轻摇 + clawWave 双钳交替挥舞 + crabBlink 眨眼（纯 CSS）
@@ -14,7 +16,10 @@
 //     ResizeObserver 监听保存；panelStyle 按当前尺寸钳制在视口内
 import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { assistant } from '../mock/assistant'
-import { assistantChat, getAssistantHistory } from '../api'
+import {
+  assistantChat, getAssistantHistory,
+  getAssistantSessions, createAssistantSession, deleteAssistantSession,
+} from '../api'
 
 // 快捷按钮 → 后端 quick 指令
 const QUICK_KEYS = {
@@ -29,28 +34,123 @@ const panelEl = ref(null)
 // 聊天记录：{ who, text } 普通消息；{ who, think: [] } 思考过程
 const messages = ref([{ who: '记忆助手', text: assistant.greeting }])
 
-let historyLoaded = false  // 历史只拉一次，之后的问答直接本地追加
+let sessionsInited = false  // 会话列表只初始化一次；切换会话时单独拉历史
 
 function togglePanel() { panelShow.value = !panelShow.value }
-function closePanel() { panelShow.value = false }
+function closePanel() { panelShow.value = false; sessionsOpen.value = false }
 
-// 面板首次打开：拉取历史对话渲染（用户消息 + 助手思考过程 + 回复），失败保持现状
-watch(panelShow, async (show) => {
-  if (!show || historyLoaded) return
-  historyLoaded = true
+/* ---------- 多会话管理 ---------- */
+const sessions = ref([])             // 会话列表（updated_at 倒序）
+const sessionsOpen = ref(false)      // 「≡ 对话」抽屉是否展开
+const currentSessionId = ref(null)   // 当前会话 id（localStorage 记忆）
+
+try {
+  const saved = Number(localStorage.getItem('recall-chat-session'))
+  if (Number.isInteger(saved) && saved > 0) currentSessionId.value = saved
+} catch { /* 损坏数据忽略 */ }
+
+// 拉取会话列表；接口失败不白屏，保持现状
+async function refreshSessions() {
   try {
-    const d = await getAssistantHistory(50)
+    const d = await getAssistantSessions()
+    sessions.value = d.sessions || []
+  } catch (e) {
+    console.warn('[crab] 拉取会话列表失败：', e.message)
+  }
+}
+
+// 拉取指定会话历史并渲染（清空当前消息，保留开场白在最前）
+async function loadHistory(sessionId) {
+  try {
+    const d = await getAssistantHistory(50, sessionId)
+    const hist = []
     for (const m of d.messages || []) {
       if (m.role === 'assistant' && Array.isArray(m.thinking) && m.thinking.length) {
-        messages.value.push({ who: '思考过程', think: m.thinking })
+        hist.push({ who: '思考过程', think: m.thinking })
       }
-      messages.value.push({ who: m.role === 'user' ? '你' : '记忆助手', text: m.content })
+      hist.push({ who: m.role === 'user' ? '你' : '记忆助手', text: m.content })
     }
+    messages.value = [{ who: '记忆助手', text: assistant.greeting }, ...hist]
     scrollBottom()
   } catch (e) {
     console.warn('[crab] 拉取对话历史失败，保持当前会话：', e.message)
   }
+}
+
+// 切换当前会话：记忆 id、拉历史、收起抽屉
+async function switchSession(id) {
+  if (id === currentSessionId.value) { sessionsOpen.value = false; return }
+  currentSessionId.value = id
+  localStorage.setItem('recall-chat-session', String(id))
+  sessionsOpen.value = false
+  messages.value = [{ who: '记忆助手', text: assistant.greeting }]
+  await loadHistory(id)
+}
+
+// 新建空会话并切换过去
+async function newSession() {
+  try {
+    const s = await createAssistantSession()
+    sessions.value = [s, ...sessions.value]
+    await switchSession(s.id)
+  } catch (e) {
+    console.warn('[crab] 新建会话失败：', e.message)
+  }
+}
+
+// 删除会话：单击即删；删的是当前会话则切到最新剩余会话，没有则新建
+async function removeSession(s) {
+  try {
+    await deleteAssistantSession(s.id)
+  } catch (e) {
+    console.warn('[crab] 删除会话失败：', e.message)
+    return
+  }
+  sessions.value = sessions.value.filter(x => x.id !== s.id)
+  if (s.id === currentSessionId.value) {
+    if (sessions.value.length) await switchSession(sessions.value[0].id)
+    else { currentSessionId.value = null; await newSession() }
+  }
+}
+
+// 面板首次打开：初始化会话列表 → 恢复/选定当前会话 → 拉历史；失败回退旧行为（全量历史）
+watch(panelShow, async (show) => {
+  if (!show || sessionsInited) return
+  sessionsInited = true
+  await refreshSessions()
+  if (!sessions.value.length) {
+    // 后端无会话（或接口失败）：试建一个；建不了则按旧行为拉全量历史
+    try {
+      const s = await createAssistantSession()
+      sessions.value = [s]
+      currentSessionId.value = s.id
+      localStorage.setItem('recall-chat-session', String(s.id))
+      return  // 新会话无历史，开场白即可
+    } catch (e) {
+      console.warn('[crab] 会话接口不可用，回退全量历史模式：', e.message)
+      await loadHistory(null)
+      return
+    }
+  }
+  const saved = sessions.value.find(s => s.id === currentSessionId.value)
+  currentSessionId.value = (saved || sessions.value[0]).id
+  localStorage.setItem('recall-chat-session', String(currentSessionId.value))
+  await loadHistory(currentSessionId.value)
 })
+
+// 「≡ 对话」按钮：开合抽屉，展开时顺便刷新列表（updated_at 可能因新问答变化）
+function toggleSessions() {
+  sessionsOpen.value = !sessionsOpen.value
+  if (sessionsOpen.value) refreshSessions()
+}
+
+// 会话时间标注：MM-DD HH:mm（mono 小字）
+function fmtTime(iso) {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  const p = n => String(n).padStart(2, '0')
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
 
 /* ---------- 拖动 ---------- */
 // 螃蟹左上角坐标（fixed 定位），默认左上角；读取上次拖到的位置
@@ -131,9 +231,19 @@ let resizeObserver = null
 onMounted(() => {
   // 监听面板尺寸变化（resize 手柄拖动），写入 localStorage；面板隐藏时尺寸为 0，不保存
   resizeObserver = new ResizeObserver(entries => {
-    const r = entries[0]?.contentRect
-    if (!r || !panelShow.value || r.width < 10 || r.height < 10) return
-    panelSize.value = { w: Math.round(r.width), h: Math.round(r.height) }
+    const entry = entries[0]
+    if (!entry || !panelShow.value) return
+    // 【缩回 bug 根因】全局 box-sizing:border-box（base.css）+ 面板 1px 边框：
+    // panelStyle 内联写的 width/height 是 border-box，而 contentRect 是 content-box（小 2px）。
+    // 若把 contentRect 写回 panelSize → 内联 width 收窄 2px → content-box 再小 2px → RO 再触发，
+    // 形成每帧 -2px 的反馈环，表现为"松开手柄后面板慢慢缩回"。
+    // 修法：统一用 border-box 尺寸（borderBoxSize，退化为 offsetWidth/Height），读写同口径即收敛。
+    const bb = entry.borderBoxSize?.[0]
+    const w = Math.round(bb ? bb.inlineSize : entry.target.offsetWidth)
+    const h = Math.round(bb ? bb.blockSize : entry.target.offsetHeight)
+    if (w < 10 || h < 10) return
+    if (w === panelSize.value.w && h === panelSize.value.h) return  // 尺寸未变不写回，避免无谓重渲染
+    panelSize.value = { w, h }
     localStorage.setItem('recall-chat-size', JSON.stringify(panelSize.value))
   })
   if (panelEl.value) resizeObserver.observe(panelEl.value)
@@ -160,14 +270,21 @@ async function scrollBottom() {
 }
 
 // 发送提问：插入用户消息 → 「思考中…」→ 真实接口返回 thinking 调用链 + reply
-// 快捷按钮传 quick 指令，自由输入传 message；失败回退 mock 演示回复
+// 快捷按钮传 quick 指令，自由输入传 message；带上当前会话 id 落库；失败回退 mock 演示回复
 async function ask(text, quick) {
   messages.value.push({ who: '你', text })
   const thinkingMsg = { who: '思考过程', think: ['思考中…'] }
   messages.value.push(thinkingMsg)
   scrollBottom()
   try {
-    const d = await assistantChat(quick ? { quick } : { message: text })
+    const payload = quick ? { quick } : { message: text }
+    if (currentSessionId.value) payload.session_id = currentSessionId.value
+    const d = await assistantChat(payload)
+    // 未指定会话时后端会落到最近/自动新建的会话：以返回的 session_id 为准记下来
+    if (d.session_id && d.session_id !== currentSessionId.value) {
+      currentSessionId.value = d.session_id
+      localStorage.setItem('recall-chat-session', String(d.session_id))
+    }
     thinkingMsg.think = d.thinking
     messages.value.push({ who: '记忆助手', text: d.reply })
   } catch (e) {
@@ -239,7 +356,10 @@ function send() {
 
   <!-- 对话面板：位置跟随螃蟹；resize:both 可拖拽右下角调整宽高（尺寸记忆在 localStorage） -->
   <div class="chat-panel" :class="{ show: panelShow }" :style="panelStyle" ref="panelEl">
-    <div class="chat-head"><b>记忆助手</b><span>RECALL ASSISTANT</span><span class="x" @click="closePanel">✕</span></div>
+    <div class="chat-head">
+      <button class="sess-btn" title="对话列表" @click="toggleSessions">≡ 对话</button>
+      <b>记忆助手</b><span>RECALL ASSISTANT</span><span class="x" @click="closePanel">✕</span>
+    </div>
     <div class="chat-quick">
       <button v-for="p in assistant.quickPrompts" :key="p.label" @click="ask(p.q, QUICK_KEYS[p.label])">{{ p.label }}</button>
     </div>
@@ -255,6 +375,26 @@ function send() {
     <div class="chat-input">
       <input v-model="inputText" placeholder="问点什么…" @keydown.enter="send">
       <button @click="send">发送</button>
+    </div>
+
+    <!-- 会话抽屉：面板内覆盖层，列表（标题 + 时间 + 条数），hover 出删除 ✕，顶部「+ 新对话」 -->
+    <div class="chat-sessions" v-if="sessionsOpen">
+      <div class="chat-sessions-head">
+        <span>对话列表</span>
+        <button @click="newSession">+ 新对话</button>
+      </div>
+      <div class="chat-sessions-list">
+        <div
+          class="chat-sess" v-for="s in sessions" :key="s.id"
+          :class="{ active: s.id === currentSessionId }"
+          @click="switchSession(s.id)"
+        >
+          <span class="t">{{ s.title }}</span>
+          <span class="meta">{{ fmtTime(s.updated_at) }} · {{ s.message_count }} 条</span>
+          <span class="del" title="删除该对话" @click.stop="removeSession(s)">✕</span>
+        </div>
+        <div class="chat-sess-empty" v-if="!sessions.length">暂无历史对话</div>
+      </div>
     </div>
   </div>
 </template>

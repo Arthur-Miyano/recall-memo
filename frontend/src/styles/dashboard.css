@@ -85,7 +85,38 @@
 .dm-trend-legend i { width: 16px; height: 0; border-top: 2px solid var(--ink); display: inline-block; vertical-align: middle; margin-right: 6px; }
 .dm-trend-legend i.fail { border-top-color: var(--seal); border-top-style: dashed; }
 
-/* ---- 知识图谱放大：大画布 + 节点详情 ---- */
+/* ---- 知识图谱放大：技术栈 Tab（一次一栈）+ 纸墨 3D 画布 + 节点详情 ---- */
+/* 胶囊 Tab：墨色描边，选中反白；右侧 mono 数字为 掌握/总数 */
+.kg-tabs { display: flex; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+.kg-tab {
+  font-family: var(--mono); font-size: 12px; letter-spacing: .08em;
+  border: 1px solid var(--ink-45); border-radius: 999px; background: none; color: var(--ink-70);
+  padding: 6px 16px; cursor: pointer; display: inline-flex; align-items: baseline; gap: 8px;
+  transition: background .15s, color .15s, border-color .15s;
+}
+.kg-tab:hover { border-color: var(--ink); color: var(--ink); }
+.kg-tab.active { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.kg-tab-num { font-size: 10px; color: var(--ink-45); }
+.kg-tab.active .kg-tab-num { color: rgba(237, 239, 234, .75); }
+
+/* 纸墨 3D 舞台：perspective 给舞台，平面做基础倾斜 + 光标视差（JS 内联 transform） */
+.dm-kg-stage { perspective: 1200px; padding: 6px 0 10px; }
+.dm-kg-plane {
+  transform: rotateX(10deg);              /* 静态基础倾斜（JS 视差会覆盖为叠加值） */
+  transition: transform .25s var(--ease-out);
+  transform-style: preserve-3d;
+  will-change: transform;
+}
+/* 切栈过渡：复用 screenIn 语言（淡入上移），:key 变化触发重放 */
+.dm-kg-in { animation: screenIn .3s var(--ease-out); }
+/* 节点“浮起”：偏移投影（SVG 不支持 box-shadow，用 drop-shadow 滤镜） */
+.dm-kg .node-box { filter: drop-shadow(2.5px 3px 0 rgba(25, 25, 25, .22)); }
+.dm-kg .root { filter: drop-shadow(3px 4px 0 rgba(25, 25, 25, .3)); }
+/* reduced-motion：禁用倾斜与视差，回归平面图纸 */
+@media (prefers-reduced-motion: reduce) {
+  .dm-kg-plane { transform: none !important; transition: none; }
+  .dm-kg-in { animation: none; }
+}
 .dm-kg text { font-family: var(--mono); fill: var(--ink-70); letter-spacing: .03em; }
 .dm-kg .nd { cursor: pointer; }
 .dm-kg .nd:hover .node-box { outline: 1px solid var(--ink); }
@@ -146,6 +177,15 @@
   padding: 14px 16px; box-sizing: border-box;
 }
 .ip-textarea:focus { outline: 2px solid var(--ink-45); outline-offset: -1px; }
+/* 已选 PDF 的只读占位态：虚线描边 + 浅墨字，与可编辑态区分 */
+.ip-textarea-picked { border-style: dashed; color: var(--ink-45); }
+.ip-picked { margin-top: 8px; }
+.ip-picked-clear {
+  font-family: var(--mono); font-size: 11px; letter-spacing: .06em;
+  background: none; border: none; color: var(--ink-45); cursor: pointer; padding: 2px 0;
+  text-decoration: underline; text-underline-offset: 3px;
+}
+.ip-picked-clear:hover { color: var(--seal); }
 .ip-toolbar { display: flex; align-items: center; gap: 18px; margin-top: 14px; flex-wrap: wrap; }
 .ip-file-btn {
   font-family: var(--mono); font-size: 12px; letter-spacing: .06em;

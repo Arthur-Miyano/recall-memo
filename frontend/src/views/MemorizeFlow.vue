@@ -10,7 +10,8 @@
 //   - 纸张掉落入场：.screen.active .paper 的 drop 动画（纯 CSS）
 //   - mem-stage.quizzing 切换展示/考核两个区域（CSS 显隐 + screenIn）
 //   - 关键词提示 kw-hint.show、反馈面板 quiz-feedback.show（drop 动画）
-import { ref, onMounted } from 'vue'
+//   - 展示阶段题目卡片点击 → .paper-modal 单题放大（宋体大题干 + 完整答案 + 上/下题导航，Esc/遮罩关闭）
+import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { memorizeSession as m } from '../mock/memorize'
 import { createSession, startQuiz as apiStartQuiz, getCurrent, submitAnswer } from '../api'
@@ -140,6 +141,26 @@ function nextQuestion() {
   answerText.value = ''
 }
 
+/* ---------- 单题放大（展示阶段） ---------- */
+// 点击题目卡片放大：zoomIdx 为 questions 下标（null=关闭）；←/→ 键也可翻题
+const zoomIdx = ref(null)
+
+function openZoom(i) { zoomIdx.value = i }
+function closeZoom() { zoomIdx.value = null }
+function zoomPrev() { if (zoomIdx.value > 0) zoomIdx.value-- }
+function zoomNext() { if (zoomIdx.value < questions.value.length - 1) zoomIdx.value++ }
+
+function onZoomKey(e) {
+  if (zoomIdx.value === null) return
+  if (e.key === 'Escape') closeZoom()
+  else if (e.key === 'ArrowLeft') zoomPrev()
+  else if (e.key === 'ArrowRight') zoomNext()
+}
+onMounted(() => window.addEventListener('keydown', onZoomKey))
+onUnmounted(() => window.removeEventListener('keydown', onZoomKey))
+// 放大时锁定背景滚动
+watch(zoomIdx, v => { document.body.style.overflow = v === null ? '' : 'hidden' })
+
 // 像素条：分数 → 10 格（向下取整，与原型静态格数一致）
 function cells(v) { return Math.floor(v / 10) }
 </script>
@@ -154,9 +175,9 @@ function cells(v) { return Math.floor(v / 10) }
       </div>
       <div class="iv-line" style="margin-bottom:36px"><i style="width:100%"></i></div>
 
-      <!-- 阶段一：展示题干+答案供记忆 -->
+      <!-- 阶段一：展示题干+答案供记忆（点击卡片单题放大） -->
       <div class="mem-show">
-        <div class="paper mem-q" v-for="q in questions" :key="q.no">
+        <div class="paper mem-q mem-click" v-for="(q, i) in questions" :key="q.no" @click="openZoom(i)">
           <div class="paper-head">
             <span class="no">{{ q.no }}</span>
             <h3>{{ q.title }}</h3>
@@ -166,7 +187,7 @@ function cells(v) { return Math.floor(v / 10) }
         </div>
         <div class="mem-actions">
           <button class="btn" :disabled="!!busy" @click="startQuiz">我记好了，开始考核 →</button>
-          <span class="iv-note">// 考核时将打乱顺序，只显示变体题干</span>
+          <span class="iv-note">// 考核时将打乱顺序，只显示变体题干；点击题目卡片可放大逐题观看</span>
         </div>
       </div>
 
@@ -220,6 +241,26 @@ function cells(v) { return Math.floor(v / 10) }
             <button class="btn" v-if="!finished" @click="nextQuestion">下一题 →</button>
             <button class="btn" v-else @click="router.push('/')">完成，返回首页 →</button>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 单题放大 modal：宋体大题干 + 完整标准答案 + 上/下题导航（Esc / 点遮罩关闭，←/→ 翻题） -->
+    <div class="pm-overlay" v-if="zoomIdx !== null && questions[zoomIdx]" @click.self="closeZoom">
+      <div class="pm-paper" role="dialog" aria-label="题目放大查看">
+        <div class="pm-head">
+          <span class="fig">{{ questions[zoomIdx].no }}<template v-if="questions[zoomIdx].retry"> · 待补答</template></span>
+          <h2>题目记忆</h2>
+          <button class="pm-close" title="关闭（Esc）" @click="closeZoom">✕</button>
+        </div>
+        <div class="pm-body">
+          <div class="pm-q">{{ questions[zoomIdx].title }}</div>
+          <div class="pm-answer"><span class="lbl">标准答案</span>{{ questions[zoomIdx].answer }}</div>
+        </div>
+        <div class="pm-nav">
+          <button :disabled="zoomIdx === 0" @click="zoomPrev">← 上一题</button>
+          <span class="idx">{{ zoomIdx + 1 }} / {{ questions.length }}</span>
+          <button :disabled="zoomIdx === questions.length - 1" @click="zoomNext">下一题 →</button>
         </div>
       </div>
     </div>
