@@ -1,37 +1,130 @@
 <script setup>
 // 屏幕四：仪表盘（背诵档案台）
 // 职责：日历热力 / 7 天趋势阶梯折线 / 各栈正确率像素柱 / 知识图谱 / 今日建议 / 模型密钥设置
-// 数据流：mock/dashboard.js → dashboard（未来 GET /api/dashboard）
+// 数据流（真实接口，任一失败回退 mock/dashboard.js 并 console.warn）：
+//   GET /api/stats/overview     —— 各栈正确率、覆盖度
+//   GET /api/stats/daily?days=N —— 日历热力（28 天）与 7 天趋势、连续打卡
+//   GET /api/bank/overview      —— 知识图谱节点状态 + 今日建议
 // 图表说明：折线与知识图谱为手绘 SVG（图纸感直角转折、像素方块节点），
 //   有意不用 ECharts —— 像素美学是设计的一部分
+import { ref, computed, onMounted } from 'vue'
 import SettingsPanel from '../components/SettingsPanel.vue'
-import { dashboard as db } from '../mock/dashboard'
+import { dashboard as mockDb } from '../mock/dashboard'
+import { getStatsOverview, getStatsDaily, getBankOverview } from '../api'
+
+// 整体数据：先渲染 mock 骨架，真实数据到位后逐块替换
+const db = ref(mockDb)
+
+const WEEKDAYS_CN = ['日', '一', '二', '三', '四', '五', '六']
+// 知识图谱根节点预设坐标（viewBox 440×320），按技术栈顺序循环取用
+const ROOT_POS = [{ x: 80, y: 70 }, { x: 320, y: 70 }, { x: 200, y: 260 }, { x: 80, y: 260 }, { x: 360, y: 260 }]
+// cell.status → 图谱节点状态
+const CELL2NODE = { done: 'mastered', weak: 'weak', todo: 'todo' }
+
+onMounted(async () => {
+  try {
+    const [ov, daily28, daily7, bank] = await Promise.all([
+      getStatsOverview(), getStatsDaily(28), getStatsDaily(7), getBankOverview(),
+    ])
+    // 连续打卡：从今天往前数有答题的天数
+    let streak = 0
+    for (let i = daily7.items.length - 1; i >= 0; i--) {
+      if (daily7.items[i].total_count > 0) streak++
+      else break
+    }
+    const next = {
+      headMeta: [
+        `已覆盖 ${ov.covered} / ${ov.total_questions} 题 · 连续打卡 ${streak} 天`,
+        `数据截至 ${new Date().toLocaleDateString('zh-CN')}`,
+      ],
+      // 日历热力：0→0 级，1→l1，2→l2，3→l3，≥4→l4
+      calendar: daily28.items.map(d => Math.min(d.total_count, 4)),
+      trend: {
+        values: daily7.items.map(d => d.total_count),
+        days: daily7.items.map(d => WEEKDAYS_CN[new Date(d.date + 'T00:00:00').getDay()]),
+        max: Math.max(...daily7.items.map(d => d.total_count), 1),
+      },
+      accuracy: Object.entries(ov.per_stack).map(([name, s]) => ({
+        name: name.toUpperCase(),
+        pct: s.pass_rate == null ? 0 : Math.round(s.pass_rate * 100),
+      })),
+      graph: buildGraph(bank),
+      suggestions: buildSuggestions(bank),
+      settings: mockDb.settings, // 设置面板自行请求真实接口，这里仅占位
+    }
+    db.value = next
+  } catch (e) {
+    console.warn('[dashboard] 统计数据获取失败，回退 mock 数据：', e.message)
+  }
+})
+
+// 知识图谱：技术栈根节点 + 每题一个子节点（围绕根节点扇形排布）
+function buildGraph(bank) {
+  const roots = []
+  const kids = {}
+  bank.stacks.forEach((stack, si) => {
+    const pos = ROOT_POS[si % ROOT_POS.length]
+    const label = stack.name.toUpperCase()
+    roots.push({ x: pos.x, y: pos.y, label })
+    kids[label] = []
+    let i = 0
+    stack.groups.forEach(g => g.cells.forEach(c => {
+      kids[label].push({
+        x: Math.min(Math.max(pos.x - 50 + (i % 3) * 60, 20), 420),
+        y: Math.min(pos.y + 60 + Math.floor(i / 3) * 50, 310),
+        t: (c.label || c.tip.split(' · ')[0]).slice(0, 8),
+        s: CELL2NODE[c.status] || 'todo',
+      })
+      i++
+    }))
+  })
+  return { roots, kids }
+}
+
+// 今日建议：薄弱（待补答/低分）优先，取前 3
+function buildSuggestions(bank) {
+  const weak = []
+  bank.stacks.forEach(s => s.groups.forEach(g => g.cells.forEach(c => {
+    if (c.status === 'weak') {
+      weak.push({
+        d: c.retry ? '待补答' : '低分',
+        t: c.tip.split(' · ')[0],
+        s: c.score == null ? '—' : String(c.score),
+      })
+    }
+  })))
+  weak.sort((a, b) => Number(a.s) - Number(b.s))
+  return weak.slice(0, 3)
+}
 
 // ---- 7 天趋势折线（SVG 手绘，坐标换算与原型一致） ----
 const W = 560, H = 160, pad = 28
-const max = db.trend.max
 const px = i => pad + i * (W - pad * 2) / 6
-const py = v => H - pad - v * (H - pad * 2) / max
+const py = v => H - pad - v * (H - pad * 2) / db.value.trend.max
 // 阶梯折线：先水平后垂直的直角转折
-const trendPath = (() => {
-  const vals = db.trend.values
+const trendPath = computed(() => {
+  const vals = db.value.trend.values
   let d = `M ${px(0)} ${py(vals[0])}`
   for (let i = 1; i < vals.length; i++) d += ` H ${px(i)} V ${py(vals[i])}`
   return d
-})()
-const gridLines = Array.from({ length: max + 1 }, (_, g) => g)
+})
+const gridLines = computed(() => Array.from({ length: db.value.trend.max + 1 }, (_, g) => g))
 
 // ---- 知识图谱：根-子连线与节点展平 ----
-const kgEdges = []
-const kgNodes = []
-db.graph.roots.forEach(r => {
-  db.graph.kids[r.label].forEach(k => {
-    kgEdges.push({ x1: r.x, y1: r.y, x2: k.x, y2: k.y })
-    kgNodes.push(k)
+const kgEdges = computed(() => {
+  const edges = []
+  db.value.graph.roots.forEach(r => {
+    (db.value.graph.kids[r.label] || []).forEach(k => edges.push({ x1: r.x, y1: r.y, x2: k.x, y2: k.y }))
   })
+  return edges
+})
+const kgNodes = computed(() => {
+  const nodes = []
+  db.value.graph.roots.forEach(r => nodes.push(...(db.value.graph.kids[r.label] || [])))
+  return nodes
 })
 // 正确率像素柱：pct → 10 格
-function accCells(pct) { return Math.round(pct / 10) }
+function accCells(p) { return Math.round(p / 10) }
 </script>
 
 <template>
@@ -131,6 +224,7 @@ function accCells(pct) { return Math.round(pct / 10) }
             <li v-for="(sg, i) in db.suggestions" :key="i">
               <span class="d">{{ sg.d }}</span><span class="t">{{ sg.t }}</span><span class="s">{{ sg.s }}</span>
             </li>
+            <li v-if="!db.suggestions.length"><span class="d">OK</span><span class="t">暂无薄弱题，保持节奏</span><span class="s">—</span></li>
           </ul>
         </div>
       </div>

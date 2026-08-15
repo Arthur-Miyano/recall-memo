@@ -5,11 +5,12 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlmodel import Session as DBSession
+from sqlmodel import Session as DBSession, select
 
 from agents import StateError, orchestrator
 from agents.orchestrator import get_session_info
 from database import engine
+from models import Question, RetryQueueItem, Session
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
@@ -30,11 +31,6 @@ class AnswerRequest(BaseModel):
     answer: str
     # 调用方标记的开始作答时间（面试模式时间压力：2 分钟内必须开始作答）
     started_at: Optional[datetime] = None
-
-
-class RetryRequest(BaseModel):
-    question_id: int
-    answer: str
 
 
 def _handle_state_error(exc: StateError) -> HTTPException:
@@ -93,22 +89,50 @@ async def skip_question(session_id: int, db: DBSession = Depends(get_db)):
 
 @router.get("/{session_id}/review")
 async def review_report(session_id: int, db: DBSession = Depends(get_db)):
-    """终局复盘报告：逐题对照、各维度得分、薄弱点分析、学习建议、需补答列表。"""
+    """终局复盘报告：逐题对照、各维度得分、薄弱点分析、学习建议、错题去向（已入待补答队列）。"""
     try:
         return await orchestrator.run("review", db=db, session_id=session_id)
     except StateError as exc:
         raise _handle_state_error(exc) from exc
 
 
+@router.get("/retry-queue")
+def retry_queue(db: DBSession = Depends(get_db)):
+    """待补答队列：面试/考核答错（或跳过）的题，在记忆训练中优先重背，答及格后出队。"""
+    items = db.exec(select(RetryQueueItem).order_by(RetryQueueItem.created_at)).all()
+    return {
+        "count": len(items),
+        "items": [
+            {
+                "question_id": item.question_id,
+                "stem": (q.stem if q else ""),
+                "tech_stack": (q.tech_stack if q else ""),
+                "source": item.source,
+                "created_at": item.created_at.isoformat(),
+            }
+            for item in items
+            for q in [db.get(Question, item.question_id)]
+        ],
+    }
+
+
+@router.get("/latest-review")
+def latest_review(db: DBSession = Depends(get_db)):
+    """最近一次已生成复盘报告的面试场次（复盘页无 session_id 时的入口）。"""
+    session = db.exec(
+        select(Session)
+        .where(Session.state == "INTERVIEW_REVIEW")
+        .order_by(Session.updated_at.desc())
+    ).first()
+    if session is None or not (session.context or {}).get("review_report"):
+        raise HTTPException(status_code=404, detail="暂无复盘报告，请先完成一场面试模拟")
+    return session.context["review_report"]
+
+
 @router.post("/{session_id}/retry")
-async def retry_question(session_id: int, req: RetryRequest, db: DBSession = Depends(get_db)):
-    """补答：仅允许复盘报告"需补答"列表中的题，每题仅 1 次；原记录保留，补答写新记录。"""
-    try:
-        return await orchestrator.run(
-            "retry", db=db, session_id=session_id, question_id=req.question_id, answer=req.answer
-        )
-    except StateError as exc:
-        raise _handle_state_error(exc) from exc
+async def retry_question(session_id: int, db: DBSession = Depends(get_db)):
+    """旧"复盘补答"端点已下线：答错的题自动进待补答队列，在记忆训练中重背。"""
+    raise HTTPException(status_code=410, detail="补答已迁移到记忆训练：答错的题自动进入待补答队列，请在记忆训练中重背")
 
 
 @router.get("/{session_id}")

@@ -12,7 +12,7 @@ from typing import Optional
 from sqlalchemy import case, func
 from sqlmodel import Session as DBSession, select
 
-from models import Question, QuestionGroup, Record
+from models import Question, QuestionGroup, Record, RetryQueueItem
 
 from .base import BaseAgent, SCORE_PASS_THRESHOLD, consecutive_success
 
@@ -67,7 +67,7 @@ class StrategyAgent(BaseAgent):
         tech_stack: Optional[str] = None,
         count: int = 3,
     ) -> list[Question]:
-        """智能抽题：新题优先，其次历史表现差的题。
+        """智能抽题：待补答队列优先，其次新题，再次历史表现差的题。
 
         tech_stack 为 None / 空串 / "mixed" 时不限技术栈。
         题量不足时返回全部可用题（MVP 允许）。
@@ -78,6 +78,13 @@ class StrategyAgent(BaseAgent):
         questions = list(db.exec(stmt).all())
         if not questions:
             return []
+
+        # 待补答队列：答错的题优先重背（按入队时间先后）
+        queue_rows = db.exec(select(RetryQueueItem).order_by(RetryQueueItem.created_at)).all()
+        queue_ids = [r.question_id for r in queue_rows]
+        by_id = {q.id: q for q in questions}
+        queued = [by_id[qid] for qid in queue_ids if qid in by_id]
+        queued_id_set = {q.id for q in queued}
 
         # 汇总每题历史表现：答题次数、平均分、成功次数
         rows = db.exec(
@@ -91,13 +98,14 @@ class StrategyAgent(BaseAgent):
         # stats: question_id -> (次数, 平均分, 成功数)
         stats = {qid: (cnt, avg or 0.0, ok or 0) for qid, cnt, avg, ok in rows}
 
-        fresh = [q for q in questions if q.id not in stats]
+        rest = [q for q in questions if q.id not in queued_id_set]
+        fresh = [q for q in rest if q.id not in stats]
         random.shuffle(fresh)
         # 历史表现差的优先：先按平均分升序，同分再按成功率升序
-        seen = [q for q in questions if q.id in stats]
+        seen = [q for q in rest if q.id in stats]
         seen.sort(key=lambda q: (stats[q.id][1], stats[q.id][2] / stats[q.id][0]))
 
-        return (fresh + seen)[:count]
+        return (queued + fresh + seen)[:count]
 
     # ------------------------------------------------------------------
     # 面试模拟抽题：追问链 + 独立单题 + 排除规则

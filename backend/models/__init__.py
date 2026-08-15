@@ -3,5 +3,9 @@
 from .question import Question, QuestionGroup
 from .session import Session
 from .record import Record, DailyStat
+from .extras import QuestionFocus, RetryQueueItem
 
-__all__ = ["Question", "QuestionGroup", "Session", "Record", "DailyStat"]
+__all__ = [
+    "Question", "QuestionGroup", "Session", "Record", "DailyStat",
+    "QuestionFocus", "RetryQueueItem",
+]

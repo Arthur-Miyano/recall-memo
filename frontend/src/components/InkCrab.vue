@@ -2,7 +2,8 @@
 // 全局组件：水墨小螃蟹（智能助理入口）+ 对话面板
 // 职责：常驻页面、原地挥钳待机；点击开合对话面板（5 个快捷提示词 + 自由输入 + 思考过程展示）；
 //       可按住拖动到任意位置（位置存 localStorage），待机时偶尔吐泡泡，拖动结束 / 收到答复时吐一串
-// 数据流：mock/assistant.js → assistant（未来 POST /api/assistant/chat）
+// 数据流：POST /api/assistant/chat（{message} 或 {quick}）→ {thinking, reply}；
+//         请求失败回退 mock/assistant.js 演示回复（console.warn，不打断对话）
 // 动效：
 //   - 待机：crabSway 身体轻摇 + clawWave 双钳交替挥舞 + crabBlink 眨眼（纯 CSS）
 //   - 拖动：pointerdown/move/up，位移 < 6px 视为点击（开合面板），否则为拖动；拖动中身体定格、双钳加速
@@ -10,6 +11,13 @@
 //   - 面板开合：chat-panel.show 的 screenIn 动画，面板位置跟随螃蟹（下半屏则向上开）
 import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { assistant } from '../mock/assistant'
+import { assistantChat } from '../api'
+
+// 快捷按钮 → 后端 quick 指令
+const QUICK_KEYS = {
+  今日总结: 'today', 最近总结: 'recent', 全部总结: 'all',
+  重点背诵建议: 'focus', 制定背诵计划: 'plan',
+}
 
 const panelShow = ref(false)
 const inputText = ref('')
@@ -102,16 +110,24 @@ async function scrollBottom() {
   if (logEl.value) logEl.value.scrollTop = logEl.value.scrollHeight
 }
 
-// 发送提问：插入用户消息 → 思考过程 → 延迟后插入答复（演示用假回复），答复时吐泡泡
-function ask(text) {
+// 发送提问：插入用户消息 → 「思考中…」→ 真实接口返回 thinking 调用链 + reply
+// 快捷按钮传 quick 指令，自由输入传 message；失败回退 mock 演示回复
+async function ask(text, quick) {
   messages.value.push({ who: '你', text })
-  messages.value.push({ who: '思考过程', think: assistant.thinking })
+  const thinkingMsg = { who: '思考过程', think: ['思考中…'] }
+  messages.value.push(thinkingMsg)
   scrollBottom()
-  setTimeout(() => {
+  try {
+    const d = await assistantChat(quick ? { quick } : { message: text })
+    thinkingMsg.think = d.thinking
+    messages.value.push({ who: '记忆助手', text: d.reply })
+  } catch (e) {
+    console.warn('[crab] 助理接口失败，回退 mock 演示回复：', e.message)
+    thinkingMsg.think = [...assistant.thinking, `（接口异常：${e.message}，以下为演示回复）`]
     messages.value.push({ who: '记忆助手', text: assistant.reply })
-    scrollBottom()
-    burst()
-  }, assistant.replyDelayMs)
+  }
+  scrollBottom()
+  burst()
 }
 
 // 发送自由输入（按钮 / 回车）
@@ -176,7 +192,7 @@ function send() {
   <div class="chat-panel" :class="{ show: panelShow }" :style="panelStyle">
     <div class="chat-head"><b>记忆助手</b><span>RECALL ASSISTANT</span><span class="x" @click="closePanel">✕</span></div>
     <div class="chat-quick">
-      <button v-for="p in assistant.quickPrompts" :key="p.label" @click="ask(p.q)">{{ p.label }}</button>
+      <button v-for="p in assistant.quickPrompts" :key="p.label" @click="ask(p.q, QUICK_KEYS[p.label])">{{ p.label }}</button>
     </div>
     <div class="chat-log" ref="logEl">
       <div class="chat-msg" v-for="(m, i) in messages" :key="i">

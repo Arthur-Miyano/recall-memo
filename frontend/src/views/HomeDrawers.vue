@@ -1,18 +1,33 @@
 <script setup>
 // 屏幕一：首页 · 档案抽屉（模式选择）
 // 职责：整页 flex 布局 + 三个文件夹抽屉手风琴
-// 数据流：mock/home.js → homeSummary（未来 GET /api/home/summary）
+// 数据流：GET /api/home/summary → homeSummary；请求失败回退 mock/home.js（console.warn，不白屏）
 // 动效：
 //   - 抽屉开合用 grid-template-rows 0fr→1fr 过渡（.drawer.open）
 //   - 手风琴：纯点击切换，同时只展开一个，默认展开 NO.01 记忆训练
 //   - 文件夹凸舌随 hover/open 上移（CSS .drawer::before）
-import { ref } from 'vue'
-import { homeSummary } from '../mock/home'
+import { ref, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
+import { homeSummary as mockHome } from '../mock/home'
+import { getHomeSummary } from '../api'
+
+const router = useRouter()
+// 先用 mock 渲染骨架，真实数据到位后整体替换
+const data = ref(mockHome)
 
 // openIdx：当前展开的抽屉下标；null 表示全部收起
 const openIdx = ref(0)
 // 每个抽屉内各可选项组的单选状态：[抽屉][组] = 选中下标
-const optSel = ref(homeSummary.drawers.map(d => d.optGroups.map(g => g.on)))
+const optSel = ref(mockHome.drawers.map(d => d.optGroups.map(g => g.on)))
+
+onMounted(async () => {
+  try {
+    data.value = await getHomeSummary()
+    optSel.value = data.value.drawers.map(d => d.optGroups.map(g => g.on))
+  } catch (e) {
+    console.warn('[home] 后端不可用，回退 mock 数据：', e.message)
+  }
+})
 
 // 手风琴切换：点击已展开的抽屉则收起，否则只展开被点击的那个
 function toggleDrawer(i) {
@@ -22,6 +37,26 @@ function toggleDrawer(i) {
 function pickOpt(di, gi, oi) {
   optSel.value[di][gi] = oi
 }
+
+// CTA 跳转：把抽屉里选的题量/技术栈带过去
+const MEMORIZE_COUNTS = [3, 5, 7]
+const INTERVIEW_STACKS = ['python', 'agent', 'vue3', 'mixed']
+const INTERVIEW_COUNTS = [3, 4, 5]
+function go(di) {
+  if (di === 0) {
+    router.push({ path: '/memorize', query: { count: MEMORIZE_COUNTS[optSel.value[0][0]] } })
+  } else if (di === 1) {
+    router.push({
+      path: '/interview',
+      query: {
+        stack: INTERVIEW_STACKS[optSel.value[1][0]],
+        count: INTERVIEW_COUNTS[optSel.value[1][1]],
+      },
+    })
+  } else {
+    router.push({ path: '/memorize', query: { mode: 'review' } })
+  }
+}
 </script>
 
 <template>
@@ -29,15 +64,15 @@ function pickOpt(di, gi, oi) {
     <div class="home-head">
       <div class="meta-row">
         <span>RECALL — 记忆助手 / LOCAL</span>
-        <span id="home-date">{{ homeSummary.date }}</span>
+        <span id="home-date">{{ data.date }}</span>
       </div>
       <h1 class="home-title">今天，<br>进行哪一场<em>面试</em>？</h1>
-      <p class="home-sub">{{ homeSummary.sub }}</p>
+      <p class="home-sub">{{ data.sub }}</p>
     </div>
 
     <div class="drawers">
       <div
-        v-for="(d, di) in homeSummary.drawers"
+        v-for="(d, di) in data.drawers"
         :key="d.idx"
         class="drawer"
         :class="{ open: openIdx === di }"
@@ -74,7 +109,7 @@ function pickOpt(di, gi, oi) {
             </div>
           </div>
           <div class="drawer-cta">
-            <button class="btn">{{ d.cta }}</button>
+            <button class="btn" @click="go(di)">{{ d.cta }}</button>
             <span class="iv-note">{{ d.note }}</span>
           </div>
         </div></div>

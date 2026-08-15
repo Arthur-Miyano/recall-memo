@@ -6,11 +6,11 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional
 
-from sqlmodel import Session as DBSession
+from sqlmodel import Session as DBSession, select
 
 from database import engine
 from llm import llm_router
-from models import Question, Record, Session
+from models import Question, Record, RetryQueueItem, Session
 
 from .assistant import AssistantAgent
 from .base import BaseAgent
@@ -75,7 +75,6 @@ class OrchestratorAgent(BaseAgent):
             "answer": self.submit_answer,
             "skip": self.skip_question,
             "review": self.get_review,
-            "retry": self.retry_question,
         }
         handler = handlers.get(action)
         if handler is None:
@@ -165,14 +164,18 @@ class OrchestratorAgent(BaseAgent):
         db.add(session)
         db.commit()
 
-        # 抽题完成，进入展示阶段（题干+答案可见）
+        # 抽题完成，进入展示阶段（题干+答案可见）；待补答队列中的题打上「待补答」红标
+        retry_ids = {r.question_id for r in db.exec(select(RetryQueueItem)).all()}
         self._transition(db, session, _SHOW_STATES[mode], self.name)
         return {
             "session_id": session.id,
             "mode": session.mode,
             "state": session.state,
             "active_agent": session.active_agent,
-            "questions": [self._question_payload(q, with_answer=True) for q in questions],
+            "questions": [
+                {**self._question_payload(q, with_answer=True), "retry": q.id in retry_ids}
+                for q in questions
+            ],
         }
 
     async def _create_interview(
@@ -456,60 +459,6 @@ class OrchestratorAgent(BaseAgent):
         if not report:
             raise StateError("复盘报告尚未生成")
         return report
-
-    async def retry_question(
-        self, db: DBSession, session_id: int, question_id: int, answer: str
-    ) -> dict[str, Any]:
-        """补答：仅允许复盘报告"需补答"列表中的题，每题仅 1 次。
-
-        原记录保留不覆盖：补答写为新记录（is_retry=True，retry_of 指向原记录）。
-        """
-        session = self._get_session(db, session_id)
-        if session.state != SessionState.INTERVIEW_REVIEW.value:
-            raise StateError(f"当前状态 {session.state} 不能补答（需在终局复盘阶段）")
-        report = session.context.get("review_report") or {}
-        retry_list = list(report.get("retry_list") or [])
-        if question_id not in retry_list:
-            raise StateError(f"题目 {question_id} 不在需补答列表中（跳过/已及格/已补答过的题不可补答）")
-
-        question = db.get(Question, question_id)
-        if question is None:
-            raise StateError("题目在题库中不存在")
-        original = next(
-            (e for e in report.get("per_question") or [] if e["question_id"] == question_id), None
-        )
-
-        # 重新评分，写为新记录（原记录保留可查）
-        self._transition(db, session, SessionState.INTERVIEW_REVIEW, self.grader.name)
-        score, record_id = await asyncio.gather(
-            self.grader.run(question, answer),
-            self.assistant.run(db, session_id=session.id, question_id=question.id, user_answer=answer),
-        )
-        record = db.get(Record, record_id)
-        record.is_retry = True
-        record.retry_of = original.get("record_id") if original else None
-        db.add(record)
-        db.commit()
-        self.assistant.fill_scores(db, record_id, score)
-
-        # 更新报告：移出需补答列表，补答结果挂到该题条目下
-        retry_list.remove(question_id)
-        if original is not None:
-            original["retry"] = {"record_id": record_id, "user_answer": answer, "score": score}
-        report["retry_list"] = retry_list
-        retried = list(session.context.get("retried") or [])
-        retried.append(question_id)
-        self._save_context(db, session, review_report=report, retried=retried)
-        self._transition(db, session, SessionState.INTERVIEW_REVIEW, self.assistant.name)
-
-        return {
-            "session_id": session.id,
-            "question_id": question_id,
-            "record_id": record_id,
-            "is_retry": True,
-            "score": score,
-            "standard_answer": question.answer,
-        }
 
     # ------------------------------------------------------------------
     # 内部工具

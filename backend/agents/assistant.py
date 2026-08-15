@@ -8,7 +8,7 @@ from typing import Any, Optional
 
 from sqlmodel import Session as DBSession, select
 
-from models import DailyStat, Question, Record, Session
+from models import DailyStat, Question, Record, RetryQueueItem, Session
 
 from .base import BaseAgent, SCORE_PASS_THRESHOLD, consecutive_success
 
@@ -57,7 +57,36 @@ class AssistantAgent(BaseAgent):
         # 总分低于阈值标记为需要补答/复习
         record.need_followup = (score.get("total") or 0.0) < SCORE_PASS_THRESHOLD
         db.add(record)
+        # 待补答队列：不及格入队，及格出队（记忆训练/面试共用此出口）
+        if record.need_followup:
+            self._enqueue_retry(db, record)
+        else:
+            self._dequeue_retry(db, record.question_id)
         self._bump_daily_stat(db, passed=(score.get("total") or 0.0) >= SCORE_PASS_THRESHOLD)
+
+    def _enqueue_retry(self, db: DBSession, record: Record) -> None:
+        """答错（或跳过）的题进入待补答队列：已在队列中则只更新来源。"""
+        existing = db.exec(
+            select(RetryQueueItem).where(RetryQueueItem.question_id == record.question_id)
+        ).first()
+        session = db.get(Session, record.session_id)
+        source = session.mode if session else ""
+        if existing is None:
+            db.add(RetryQueueItem(question_id=record.question_id, source=source))
+        else:
+            existing.source = source
+            db.add(existing)
+        db.commit()
+
+    @staticmethod
+    def _dequeue_retry(db: DBSession, question_id: int) -> None:
+        """答及格后出队。"""
+        existing = db.exec(
+            select(RetryQueueItem).where(RetryQueueItem.question_id == question_id)
+        ).first()
+        if existing is not None:
+            db.delete(existing)
+            db.commit()
 
     def log_skip(self, db: DBSession, session_id: int, question_id: int) -> int:
         """面试跳过：记为失败（总分 0），不给补答机会（need_followup=False）。"""
@@ -72,6 +101,8 @@ class AssistantAgent(BaseAgent):
         db.add(record)
         db.commit()
         db.refresh(record)
+        # 跳过的题同样进待补答队列（判负，需在记忆训练中重背）
+        self._enqueue_retry(db, record)
         self._bump_daily_stat(db, passed=False)
         return record.id
 
@@ -160,8 +191,8 @@ class AssistantAgent(BaseAgent):
                 "record_id": item.get("record_id"),
             }
             per_question.append(entry)
-            # 需补答：本场得分 < 60 且非跳过
-            if not entry["skipped"] and score is not None and score.get("total", 0.0) < SCORE_PASS_THRESHOLD:
+            # 答错/跳过的题已自动加入待补答队列（在记忆训练中优先重背，复盘报告只展示去向）
+            if entry["skipped"] or (score is not None and score.get("total", 0.0) < SCORE_PASS_THRESHOLD):
                 retry_list.append(question.id)
 
         analysis = await self._analyze_weakness(per_question)

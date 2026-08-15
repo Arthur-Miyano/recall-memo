@@ -22,6 +22,9 @@ PROVIDER_KEY_ATTR: dict[str, str] = {
     "kimi": "kimi_api_key",
 }
 
+# 各 Provider 的 api key 对应的环境变量名（= settings 字段名大写）
+PROVIDER_ENV_VAR: dict[str, str] = {name: attr.upper() for name, attr in PROVIDER_KEY_ATTR.items()}
+
 
 class LLMProviderUnavailableError(RuntimeError):
     """所有 Provider 均不可用或全部调用失败。"""
@@ -31,10 +34,23 @@ class LLMRouter:
     """按优先级调度 Provider：超时/限流/报错自动切换下一个。"""
 
     def __init__(self) -> None:
-        self._clients: dict[str, BaseLLMClient] = {}
+        self._clients: dict[str, BaseLLMClient] = self._build_clients()
+
+    @staticmethod
+    def _build_clients() -> dict[str, BaseLLMClient]:
+        """按当前 settings 实例化全部 Provider 客户端（llm_model 非空时覆盖默认模型名）。"""
+        clients: dict[str, BaseLLMClient] = {}
         for name, cls in PROVIDER_REGISTRY.items():
             api_key = getattr(settings, PROVIDER_KEY_ATTR.get(name, ""), "")
-            self._clients[name] = cls(api_key=api_key, timeout=settings.llm_timeout)
+            client = cls(api_key=api_key, timeout=settings.llm_timeout)
+            if settings.llm_model:
+                client.model = settings.llm_model
+            clients[name] = client
+        return clients
+
+    def reload(self) -> None:
+        """配置变更（设置面板写入 .env）后重建客户端，让新 Key/模型立即生效。"""
+        self._clients = self._build_clients()
 
     def get_client(self, name: str) -> Optional[BaseLLMClient]:
         return self._clients.get(name)

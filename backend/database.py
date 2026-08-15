@@ -13,3 +13,29 @@ def init_db() -> None:
     import models  # noqa: F401  确保所有表已注册到 metadata
 
     SQLModel.metadata.create_all(engine)
+    backfill_retry_queue()
+
+
+def backfill_retry_queue() -> None:
+    """按每题最新一条记录重建待补答队列（兼容建表前的老数据）。
+
+    规则与运行时一致：最新记录不及格或被跳过 → 在队列；最新记录及格 → 不在队列。
+    """
+    from sqlmodel import Session as DBSession, select
+
+    from agents.base import SCORE_PASS_THRESHOLD
+    from models import Record, RetryQueueItem
+
+    with DBSession(engine) as db:
+        records = db.exec(select(Record).order_by(Record.created_at, Record.id)).all()
+        latest: dict[int, Record] = {}
+        for r in records:
+            latest[r.question_id] = r
+        existing = {i.question_id: i for i in db.exec(select(RetryQueueItem)).all()}
+        for qid, r in latest.items():
+            failed = r.skipped or (r.score_total is not None and r.score_total < SCORE_PASS_THRESHOLD)
+            if failed and qid not in existing:
+                db.add(RetryQueueItem(question_id=qid, source="backfill"))
+            elif not failed and qid in existing:
+                db.delete(existing[qid])
+        db.commit()
