@@ -7,7 +7,6 @@
 //                     records: { mode, title, score, is_retry, skipped }
 //                     （来自 GET /api/stats/daily-detail?days=90，只含有答题的日期）
 //                     传入后点击有记录的日期格子，在月历下方展开当天逐题明细（低分红字）
-//   props.mini    —— 迷你模式（仪表盘小卡片）：固定当月、无翻页、无明细
 // 交互：
 //   ← / → 翻月，范围钳制在「数据最早月 ~ 当前月」，不翻进全空的过去/未来
 //   格子等级沿用既有 0~4 逻辑：total_count 0→空白，1/2/3→l1~l3，≥4→l4
@@ -17,7 +16,6 @@ import { ref, computed } from 'vue'
 const props = defineProps({
   items: { type: Array, default: () => [] },   // /api/stats/daily 的 items（日期升序）
   details: { type: Object, default: null },    // date → records；null 时格子不可点
-  mini: { type: Boolean, default: false },
 })
 
 const WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日'] // 周一打头
@@ -56,7 +54,6 @@ function nextMonth() {
 }
 
 const monthTitle = computed(() => `${year.value} 年 ${month.value + 1} 月`)
-const miniTitle = computed(() => `${year.value}.${String(month.value + 1).padStart(2, '0')}`)
 
 // 当月格子：前导空格（周一打头）+ 每日格子
 const cells = computed(() => {
@@ -81,18 +78,18 @@ const cells = computed(() => {
 const sel = ref('')
 const selRecords = computed(() => (props.details && sel.value ? props.details[sel.value] || [] : []))
 function pick(cell) {
-  if (props.mini || !props.details) return
+  if (!props.details) return
   if (!props.details[cell.date]) return
   sel.value = sel.value === cell.date ? '' : cell.date   // 再点一次收起
 }
 </script>
 
 <template>
-  <div class="inkcal" :class="{ mini }">
+  <div class="inkcal">
     <div class="inkcal-head">
-      <button v-if="!mini" class="inkcal-nav" :disabled="!canPrev" title="上一月" @click="prevMonth">←</button>
-      <span class="inkcal-title">{{ mini ? miniTitle : monthTitle }}</span>
-      <button v-if="!mini" class="inkcal-nav" :disabled="!canNext" title="下一月" @click="nextMonth">→</button>
+      <button class="inkcal-nav" :disabled="!canPrev" title="上一月" @click="prevMonth">←</button>
+      <span class="inkcal-title">{{ monthTitle }}</span>
+      <button class="inkcal-nav" :disabled="!canNext" title="下一月" @click="nextMonth">→</button>
     </div>
     <div class="inkcal-grid">
       <span v-for="w in WEEKDAYS" :key="w" class="inkcal-wd">{{ w }}</span>
@@ -103,7 +100,7 @@ function pick(cell) {
           class="inkcal-day"
           :class="[
             cell.lvl ? 'l' + cell.lvl : '',
-            { today: cell.isToday, sel: cell.date === sel, has: !mini && details && details[cell.date] },
+            { today: cell.isToday, sel: cell.date === sel, has: details && details[cell.date] },
           ]"
           :title="cell.title"
           @click="pick(cell)"
@@ -111,7 +108,7 @@ function pick(cell) {
       </template>
     </div>
     <!-- 当天明细：模式 + 题目 + 补答/跳过标记 + 得分（低分印章红），复用 .dm-dayhead/.dm-rec -->
-    <div v-if="!mini && sel && selRecords.length" class="inkcal-detail">
+    <div v-if="sel && selRecords.length" class="inkcal-detail">
       <div class="dm-dayhead"><span>{{ sel }}</span><span class="cnt">{{ selRecords.length }} 题</span></div>
       <div class="dm-rec" v-for="(r, i) in selRecords" :key="i">
         <span class="mode">{{ r.mode }}</span>

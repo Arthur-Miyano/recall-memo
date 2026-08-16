@@ -43,6 +43,27 @@ function mockCalItems() {
   })
 }
 
+// 小卡片方格条：最近 28 天（2 行 × 14 列），格内显示日号，今天印章红框
+const strip28 = computed(() => {
+  const countMap = Object.fromEntries((db.value.calendar || []).map(c => [c.date, c.total_count]))
+  const days = []
+  for (let i = 27; i >= 0; i--) {
+    const d = new Date()
+    d.setDate(d.getDate() - i)
+    const date = fmtDate(d)
+    const count = countMap[date] || 0
+    days.push({
+      date,
+      dayNum: d.getDate(),
+      label: `${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`,
+      level: Math.min(count, 4),
+      isToday: i === 0,
+      tip: `${d.getMonth() + 1}月${d.getDate()}日 · ${count} 题`,
+    })
+  }
+  return days
+})
+
 const WEEKDAYS_CN = ['日', '一', '二', '三', '四', '五', '六']
 // cell.status → 图谱节点状态
 const CELL2NODE = { done: 'mastered', weak: 'weak', todo: 'todo' }
@@ -346,10 +367,17 @@ function onImported() { loadDashboard() }
 
     <div class="db-grid">
       <div style="display:flex;flex-direction:column;gap:28px">
-        <!-- 日历热力格：本月迷你月历 -->
+        <!-- 日历热力格：近 28 天方格条（格内日号，点击开放大月历） -->
         <div class="db-panel db-click" @click="openModal('calendar')">
           <h2>每日背诵记录 <span class="n">FIG.04-A</span></h2>
-          <InkCalendar :items="db.calendar" mini />
+          <div class="cal-strip-range">近 28 天 · {{ strip28[0].label }} — {{ strip28[27].label }}</div>
+          <div class="cal-strip">
+            <span
+              v-for="c in strip28" :key="c.date"
+              class="cell" :class="[`l${c.level}`, { today: c.isToday }]"
+              :title="c.tip"
+            >{{ c.dayNum }}</span>
+          </div>
           <div class="cal-legend">少 <i style="background:var(--ink-12)"></i><i style="background:rgba(25,25,25,.55)"></i><i style="background:var(--ink)"></i> 多</div>
           <span class="zoom-hint">点击放大 ▸</span>
         </div>
