@@ -15,6 +15,7 @@ import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { memorizeSession as m } from '../mock/memorize'
 import { createSession, startQuiz as apiStartQuiz, getCurrent, submitAnswer } from '../api'
+import { exportRecallCard } from '../utils/recallCard'
 
 const route = useRoute()
 const router = useRouter()
@@ -163,6 +164,25 @@ watch(zoomIdx, v => { document.body.style.overflow = v === null ? '' : 'hidden' 
 
 // 像素条：分数 → 10 格（向下取整，与原型静态格数一致）
 function cells(v) { return Math.floor(v / 10) }
+
+/* ---------- 导出背诵卡片（总结页）：Canvas 手绘 PNG，见 utils/recallCard.js ---------- */
+const cardBusy = ref(false)
+async function exportCard() {
+  if (cardBusy.value) return
+  cardBusy.value = true
+  try {
+    await exportRecallCard({
+      date: new Date(),
+      count: summary.value?.question_count ?? questions.value.length,
+      questions: questions.value.map(q => ({ title: q.title, retry: q.retry })),
+    })
+  } catch (e) {
+    console.warn('[memorize] 导出背诵卡片失败：', e.message)
+    alert('导出失败：' + e.message)
+  } finally {
+    cardBusy.value = false
+  }
+}
 </script>
 
 <template>
@@ -239,7 +259,10 @@ function cells(v) { return Math.floor(v / 10) }
           </div>
           <div class="mem-actions">
             <button class="btn" v-if="!finished" @click="nextQuestion">下一题 →</button>
-            <button class="btn" v-else @click="router.push('/')">完成，返回首页 →</button>
+            <template v-else>
+              <button class="btn btn--ghost" :disabled="cardBusy" @click="exportCard">{{ cardBusy ? '绘制中…' : '导出背诵卡片 ↓' }}</button>
+              <button class="btn" @click="router.push('/')">完成，返回首页 →</button>
+            </template>
           </div>
         </div>
       </div>

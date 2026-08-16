@@ -60,13 +60,48 @@
 .dm-stamp.weak { border: 1px dashed var(--seal); color: var(--seal); }
 .dm-stamp.todo { color: var(--ink-45); }
 
-/* ---- 每日背诵记录放大：30 天热力 + 逐日明细 ---- */
-.dm-cal { display: grid; grid-template-columns: repeat(15, 1fr); gap: 4px; margin-bottom: 6px; }
-.dm-cal i { aspect-ratio: 1; background: var(--ink-12); display: block; }
-.dm-cal i.l1 { background: rgba(25,25,25,.3); }
-.dm-cal i.l2 { background: rgba(25,25,25,.55); }
-.dm-cal i.l3 { background: rgba(25,25,25,.8); }
-.dm-cal i.l4 { background: var(--ink); }
+/* ---- 通用墨水月历（InkCalendar.vue）：仪表盘小卡片（mini）+ 每日背诵记录放大 ---- */
+.inkcal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.inkcal-title { font-family: var(--serif); font-size: 17px; font-weight: 700; letter-spacing: .06em; }
+.inkcal-nav {
+  width: 28px; height: 28px; background: none; border: 1px solid var(--ink-25);
+  color: var(--ink); font-family: var(--mono); font-size: 13px; cursor: pointer;
+  transition: border-color .15s, color .15s;
+}
+.inkcal-nav:hover:not(:disabled) { border-color: var(--ink); }
+.inkcal-nav:disabled { opacity: .3; cursor: default; }
+.inkcal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+.inkcal-wd {
+  text-align: center; font-family: var(--mono); font-size: 10px;
+  color: var(--ink-45); letter-spacing: .1em; padding-bottom: 4px;
+}
+.inkcal-day {
+  aspect-ratio: 1; display: flex; align-items: center; justify-content: center;
+  font-family: var(--mono); font-size: 11px; color: var(--ink-45);
+  border: 1px solid var(--ink-12); user-select: none;
+}
+.inkcal-day.empty { border: none; }
+/* 等级沿用 0~4 逻辑：无数据留白，1~4 墨色渐深（深档反白字） */
+.inkcal-day.l1 { background: rgba(25,25,25,.3); color: var(--ink); }
+.inkcal-day.l2 { background: rgba(25,25,25,.55); color: var(--paper); }
+.inkcal-day.l3 { background: rgba(25,25,25,.8); color: var(--paper); }
+.inkcal-day.l4 { background: var(--ink); color: var(--paper); }
+.inkcal-day.today { box-shadow: inset 0 0 0 1.5px var(--seal); }   /* 今天：印章红细框 */
+.inkcal-day.has { cursor: pointer; }
+.inkcal-day.has:hover { outline: 1px solid var(--ink); outline-offset: -1px; }
+.inkcal-day.sel { outline: 1.5px solid var(--ink); outline-offset: 1px; }
+.inkcal-detail { margin-top: 4px; }
+/* 迷你模式：仪表盘小卡片，紧凑无翻页 */
+.inkcal.mini .inkcal-head { margin-bottom: 6px; }
+.inkcal.mini .inkcal-title {
+  font-family: var(--mono); font-size: 11px; font-weight: 400;
+  color: var(--ink-45); letter-spacing: .14em;
+}
+.inkcal.mini .inkcal-grid { gap: 3px; }
+.inkcal.mini .inkcal-day { font-size: 9px; }
+.inkcal.mini .inkcal-wd { font-size: 9px; padding-bottom: 2px; }
+
+/* ---- 每日背诵记录放大：当天逐题明细（InkCalendar 点击日期展开） ---- */
 .dm-dayhead {
   font-family: var(--mono); font-size: 12px; letter-spacing: .1em;
   border-bottom: 1px solid var(--ink); padding: 14px 0 6px; margin-bottom: 2px;

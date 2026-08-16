@@ -3,10 +3,10 @@
 // 职责：日历热力 / 7 天趋势阶梯折线 / 各栈正确率像素柱 / 知识图谱 / 今日建议 / 录入题库 / 模型密钥设置
 // 数据流（真实接口，任一失败回退 mock/dashboard.js 并 console.warn）：
 //   GET /api/stats/overview     —— 各栈正确率、覆盖度
-//   GET /api/stats/daily?days=N —— 日历热力（28 天）与 7 天趋势、连续打卡
+//   GET /api/stats/daily?days=N —— 月历热力（90 天，前端按月切换）与 7 天趋势、连续打卡
 //   GET /api/bank/overview      —— 知识图谱小卡片概览计数 + 今日建议
 // 放大视图（点击卡片打开纸张 modal，数据流见 api/bank.js）：
-//   每日记录 → /api/stats/daily-detail?days=30（逐日明细）+ /api/stats/daily?days=30（30 天热力）
+//   每日记录 → /api/stats/daily-detail?days=90（逐日明细）+ /api/stats/daily?days=90（月历热力，前端按月切换）
 //   趋势     → /api/stats/daily?days=30（成功/失败双色阶梯折线）
 //   正确率   → /api/stats/per-question（逐题明细表）
 //   图谱     → /api/bank/overview + /api/stats/per-question（大画布，节点点击看题干/答案/得分记录）
@@ -18,6 +18,7 @@ import { ref, computed, onMounted } from 'vue'
 import SettingsPanel from '../components/SettingsPanel.vue'
 import DashboardModal from '../components/DashboardModal.vue'
 import ImportPanel from '../components/ImportPanel.vue'
+import InkCalendar from '../components/InkCalendar.vue'
 import { dashboard as mockDb } from '../mock/dashboard'
 import { getStatsOverview, getStatsDaily, getBankOverview } from '../api'
 import {
@@ -26,7 +27,21 @@ import {
 import '../styles/dashboard.css'
 
 // 整体数据：先渲染 mock 骨架，真实数据到位后逐块替换
-const db = ref(mockDb)
+// 日历字段统一为 InkCalendar 的 items 结构 [{date, total_count}]；
+// mock 兜底时把 28 个等级数字映射为最近 28 天的日期，保证结构一致
+const db = ref({ ...mockDb, calendar: mockCalItems() })
+
+// 本地日期 → 'YYYY-MM-DD'（与后端 daily 接口口径一致）
+function fmtDate(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+function mockCalItems() {
+  return mockDb.calendar.map((v, i) => {
+    const d = new Date()
+    d.setDate(d.getDate() - (27 - i))
+    return { date: fmtDate(d), total_count: v }
+  })
+}
 
 const WEEKDAYS_CN = ['日', '一', '二', '三', '四', '五', '六']
 // cell.status → 图谱节点状态
@@ -43,8 +58,8 @@ function kgLabel(groupName, idx, count) {
 // 卡片数据加载（首屏 + 录入成功后刷新共用）
 async function loadDashboard() {
   try {
-    const [ov, daily28, daily7, bank] = await Promise.all([
-      getStatsOverview(), getStatsDaily(28), getStatsDaily(7), getBankOverview(),
+    const [ov, daily90, daily7, bank] = await Promise.all([
+      getStatsOverview(), getStatsDaily(90), getStatsDaily(7), getBankOverview(),
     ])
     // 连续打卡：从今天往前数有答题的天数
     let streak = 0
@@ -57,8 +72,8 @@ async function loadDashboard() {
         `已覆盖 ${ov.covered} / ${ov.total_questions} 题 · 连续打卡 ${streak} 天`,
         `数据截至 ${new Date().toLocaleDateString('zh-CN')}`,
       ],
-      // 日历热力：0→0 级，1→l1，2→l2，3→l3，≥4→l4
-      calendar: daily28.items.map(d => Math.min(d.total_count, 4)),
+      // 月历热力：一次拉 90 天，InkCalendar 前端按月切换；等级逻辑在组件内（0~4 级）
+      calendar: daily90.items,
       trend: {
         values: daily7.items.map(d => d.total_count),
         days: daily7.items.map(d => WEEKDAYS_CN[new Date(d.date + 'T00:00:00').getDay()]),
@@ -132,7 +147,7 @@ const modalLoading = ref(false)
 const showImport = ref(false)
 
 const MODAL_META = {
-  calendar: { title: '每日背诵记录 · 近 30 天', fig: 'FIG.04-A+' },
+  calendar: { title: '每日背诵记录 · 月历（近 90 天）', fig: 'FIG.04-A+' },
   trend: { title: '答题趋势 · 近 30 天', fig: 'FIG.04-B+' },
   accuracy: { title: '逐题明细 · 各技术栈正确率', fig: 'FIG.04-C+' },
   graph: { title: '知识图谱 · 全题状态', fig: 'FIG.04-D+' },
@@ -149,7 +164,8 @@ async function openModal(key) {
   planReply.value = ''
   try {
     if (key === 'calendar') {
-      const [detail, daily] = await Promise.all([getStatsDailyDetail(30), getStatsDaily(30)])
+      // 一次拉 90 天：月历前端按月切换，点击日期展开当天明细
+      const [detail, daily] = await Promise.all([getStatsDailyDetail(90), getStatsDaily(90)])
       modalData.value = { detail, daily }
     } else if (key === 'trend') {
       modalData.value = { daily: await getStatsDaily(30) }
@@ -171,9 +187,9 @@ async function openModal(key) {
 }
 function closeModal() { modalKey.value = ''; modalData.value = null }
 
-// ---- 放大 · 每日背诵记录：30 天热力等级（复用 daily.total_count → 0~4 级） ----
-const cal30Levels = computed(() =>
-  (modalData.value?.daily.items || []).map(d => Math.min(d.total_count, 4))
+// ---- 放大 · 每日背诵记录：date → records 映射，供 InkCalendar 点击日期展开当天明细 ----
+const calDetailMap = computed(() =>
+  Object.fromEntries((modalData.value?.detail.items || []).map(d => [d.date, d.records]))
 )
 
 // ---- 放大 · 30 天趋势：成功（墨实线）/ 失败（红虚线）双色阶梯折线 ----
@@ -330,12 +346,10 @@ function onImported() { loadDashboard() }
 
     <div class="db-grid">
       <div style="display:flex;flex-direction:column;gap:28px">
-        <!-- 日历热力格 -->
+        <!-- 日历热力格：本月迷你月历 -->
         <div class="db-panel db-click" @click="openModal('calendar')">
           <h2>每日背诵记录 <span class="n">FIG.04-A</span></h2>
-          <div class="cal">
-            <i v-for="(v, i) in db.calendar" :key="i" :class="v ? 'l' + v : ''"></i>
-          </div>
+          <InkCalendar :items="db.calendar" mini />
           <div class="cal-legend">少 <i style="background:var(--ink-12)"></i><i style="background:rgba(25,25,25,.55)"></i><i style="background:var(--ink)"></i> 多</div>
           <span class="zoom-hint">点击放大 ▸</span>
         </div>
@@ -436,26 +450,11 @@ function onImported() { loadDashboard() }
       <div v-else-if="!modalData" class="dm-empty">数据暂未备好（接口异常详见控制台）</div>
 
       <template v-else>
-        <!-- 放大 · 每日背诵记录：30 天热力 + 逐日明细 -->
+        <!-- 放大 · 每日背诵记录：完整月历（翻月 + 点击日期展开当天明细） -->
         <template v-if="modalKey === 'calendar'">
-          <div class="dm-cal">
-            <i v-for="(v, i) in cal30Levels" :key="i" :class="v ? 'l' + v : ''"
-               :title="modalData.daily.items[i].date + ' · ' + modalData.daily.items[i].total_count + ' 题'"></i>
-          </div>
-          <div class="cal-legend" style="margin-bottom:8px">少 <i style="background:var(--ink-12)"></i><i style="background:rgba(25,25,25,.55)"></i><i style="background:var(--ink)"></i> 多（悬停格子看日期与题数）</div>
-          <div v-if="!modalData.detail.items.length" class="dm-empty">近 30 天暂无答题记录</div>
-          <div v-for="day in modalData.detail.items" :key="day.date">
-            <div class="dm-dayhead"><span>{{ day.date }}</span><span class="cnt">{{ day.records.length }} 题</span></div>
-            <div class="dm-rec" v-for="(r, i) in day.records" :key="i">
-              <span class="mode">{{ r.mode }}</span>
-              <span class="t">{{ r.title }}</span>
-              <span v-if="r.is_retry" class="tag">补答</span>
-              <span v-if="r.skipped" class="tag">跳过</span>
-              <span class="score" :class="{ bad: r.score != null && r.score < 60 }">
-                {{ r.score == null ? '—' : Math.round(r.score) }}
-              </span>
-            </div>
-          </div>
+          <InkCalendar :items="modalData.daily.items" :details="calDetailMap" style="max-width:600px;margin:0 auto" />
+          <div class="cal-legend" style="margin-top:12px">少 <i style="background:var(--ink-12)"></i><i style="background:rgba(25,25,25,.55)"></i><i style="background:var(--ink)"></i> 多（点击有记录的日期展开当天明细）</div>
+          <div v-if="!modalData.detail.items.length" class="dm-empty" style="margin-top:14px">近 90 天暂无答题记录</div>
         </template>
 
         <!-- 放大 · 30 天趋势：成功/失败双色阶梯折线 -->
