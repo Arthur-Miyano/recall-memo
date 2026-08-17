@@ -44,7 +44,15 @@ const INTERVIEW_STACKS = ['python', 'agent', 'vue3', 'mixed']
 const INTERVIEW_COUNTS = [3, 4, 5]
 function go(di) {
   if (di === 0) {
-    router.push({ path: '/memorize', query: { count: MEMORIZE_COUNTS[optSel.value[0][0]] } })
+    // NO.01 记忆训练：组 0 = 技术栈（keys 与 options 一一对应），组 1 = 题量
+    const groups = data.value.drawers[0].optGroups
+    router.push({
+      path: '/memorize',
+      query: {
+        stack: groups[0].keys[optSel.value[0][0]],
+        count: MEMORIZE_COUNTS[optSel.value[0][1]],
+      },
+    })
   } else if (di === 1) {
     router.push({
       path: '/interview',
@@ -89,7 +97,7 @@ function go(di) {
               <div class="v" :style="s.seal ? 'color:var(--seal)' : ''">{{ s.v }}<small v-if="s.small">{{ s.small }}</small></div>
             </div>
           </div>
-          <!-- 可选项组：记忆训练 1 组（题量），面试模拟 2 组（技术栈 + 题量） -->
+          <!-- 可选项组：记忆训练 2 组（技术栈 + 题量），面试模拟 2 组（技术栈 + 题量） -->
           <div
             v-if="d.optGroups.length"
             class="drawer-cta"

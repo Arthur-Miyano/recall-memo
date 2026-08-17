@@ -13,8 +13,10 @@ export const homeSummary = {
         { k: '上次训练', v: '2', small: ' 天前' },
         { k: '新题优先', v: 'ON' },
       ],
-      // 可选项组：label + 单选胶囊（seal 表示印章红高亮组）
+      // 可选项组：label + 单选胶囊（seal 表示印章红高亮组）；
+      // 技术栈组的 keys 与 options 一一对应，跳转时按下标取 key 传给后端
       optGroups: [
+        { label: '技术栈', options: ['PYTHON', 'AGENT', 'VUE 3', '混合'], keys: ['python', 'agent', 'vue3', 'mixed'], on: 3, seal: true },
         { label: '题量', options: ['3 题', '5 题', '7 题'], on: 0, seal: false },
       ],
       cta: '开始记忆 →',
