@@ -27,6 +27,7 @@ const progressTag = ref(iv.progressTag)
 const question = ref(iv.question)
 const followTag = ref(iv.followTag)
 const answerText = ref('')
+const answerEl = ref(null)   // 答题框（自动撑高 / 换题复位）
 
 const sec = ref(iv.leftSec)      // 剩余秒数
 const recorded = ref(false)      // 是否已提交（显示已记录印章）
@@ -65,6 +66,7 @@ function applyQuestion(q) {
   followTag.value = q.followup ? `追问 ${q.followup}` : '独立题'
   recorded.value = false
   answerText.value = ''
+  if (answerEl.value) answerEl.value.style.height = ''   // 答题框高度复位
   startedAt = null
   resetTimer(q)
 }
@@ -92,9 +94,12 @@ onMounted(async () => {
 })
 onUnmounted(() => clearInterval(timer))
 
-// 首次输入视为开始作答（时间压力检测）
-function onInput() {
+// 首次输入视为开始作答（时间压力检测）；答题框随内容自动撑高
+function onInput(e) {
   if (!startedAt) startedAt = new Date().toISOString()
+  const el = e.target
+  el.style.height = 'auto'
+  el.style.height = Math.max(260, el.scrollHeight) + 'px'
 }
 
 // 提交回答：面试模式只回执「已记录」，不透露对错
@@ -159,7 +164,7 @@ function next() {
       <div class="iv-follow"><span class="tag tag--seal">{{ followTag }}</span></div>
 
       <div v-show="!recorded">
-        <textarea class="iv-input" :placeholder="iv.placeholder" v-model="answerText" @input="onInput"></textarea>
+        <textarea ref="answerEl" class="iv-input" :placeholder="iv.placeholder" v-model="answerText" @input="onInput"></textarea>
         <div class="iv-actions">
           <button class="btn" :disabled="!!busy" @click="submit">{{ busy || '提交回答' }}</button>
           <button class="btn btn--ghost" :disabled="!!busy" @click="skip">跳过本题</button>

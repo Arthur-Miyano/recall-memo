@@ -71,6 +71,17 @@ export const createAssistantSession = () =>
 export const deleteAssistantSession = (id) =>
   request(`/api/assistant/sessions/${id}`, { method: 'DELETE' })
 
+/* ---------- 笔记 ---------- */
+export const getNotes = () => request('/api/notes')
+export const createNote = (title = '未命名笔记') =>
+  request('/api/notes', { method: 'POST', body: { title } })
+export const getNote = (id) => request(`/api/notes/${id}`)
+export const updateNote = (id, payload) =>
+  request(`/api/notes/${id}`, { method: 'PUT', body: payload })
+export const deleteNote = (id) => request(`/api/notes/${id}`, { method: 'DELETE' })
+export const appendNote = (id, text, source = '') =>
+  request(`/api/notes/${id}/append`, { method: 'POST', body: { text, source } })
+
 /* ---------- 会话流程（记忆训练 / 面试 / 回忆） ---------- */
 export const createSession = (mode, stack, count) =>
   request('/api/sessions', { method: 'POST', body: { mode, stack, count } })

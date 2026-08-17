@@ -11,11 +11,13 @@
 //   - mem-stage.quizzing 切换展示/考核两个区域（CSS 显隐 + screenIn）
 //   - 关键词提示 kw-hint.show、反馈面板 quiz-feedback.show（drop 动画）
 //   - 展示阶段题目卡片点击 → .paper-modal 单题放大（宋体大题干 + 完整答案 + 上/下题导航，Esc/遮罩关闭）
+//   - 标准答案区域选中句子后右键 → NoteSaver 浮动菜单，存进笔记（> 引用块追加，见 api/notes）
 import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { memorizeSession as m } from '../mock/memorize'
 import { createSession, startQuiz as apiStartQuiz, getCurrent, submitAnswer } from '../api'
 import { exportRecallCard } from '../utils/recallCard'
+import NoteSaver from '../components/NoteSaver.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -165,6 +167,25 @@ watch(zoomIdx, v => { document.body.style.overflow = v === null ? '' : 'hidden' 
 // 像素条：分数 → 10 格（向下取整，与原型静态格数一致）
 function cells(v) { return Math.floor(v / 10) }
 
+/* ---------- 划句右键存笔记（标准答案区域） ---------- */
+const noteSaver = ref(null)
+function onNoteSelect(e, src) {
+  const sel = window.getSelection()?.toString().trim()
+  if (!sel) return   // 没选中文字：不拦截，走浏览器默认菜单
+  e.preventDefault()
+  noteSaver.value?.open(e.clientX, e.clientY, sel, src)
+}
+
+/* ---------- 答题框：随内容自动撑高（清空时复位） ---------- */
+const answerEl = ref(null)
+function fitAnswer() {
+  const el = answerEl.value
+  if (!el) return
+  el.style.height = 'auto'
+  el.style.height = Math.max(260, el.scrollHeight) + 'px'
+}
+watch(answerText, v => { if (!v && answerEl.value) answerEl.value.style.height = '' })
+
 /* ---------- 导出背诵卡片（总结页）：Canvas 手绘 PNG，见 utils/recallCard.js ---------- */
 const cardBusy = ref(false)
 async function exportCard() {
@@ -174,7 +195,7 @@ async function exportCard() {
     await exportRecallCard({
       date: new Date(),
       count: summary.value?.question_count ?? questions.value.length,
-      questions: questions.value.map(q => ({ title: q.title, retry: q.retry })),
+      questions: questions.value.map(q => ({ title: q.title, answer: q.answer, retry: q.retry })),
     })
   } catch (e) {
     console.warn('[memorize] 导出背诵卡片失败：', e.message)
@@ -203,7 +224,7 @@ async function exportCard() {
             <h3>{{ q.title }}</h3>
             <span class="retry-flag" v-if="q.retry">待补答</span>
           </div>
-          <div class="answer"><span class="lbl">标准答案</span>{{ q.answer }}</div>
+          <div class="answer" @contextmenu="onNoteSelect($event, q.title)"><span class="lbl">标准答案</span>{{ q.answer }}</div>
         </div>
         <div class="mem-actions">
           <button class="btn" :disabled="!!busy" @click="startQuiz">我记好了，开始考核 →</button>
@@ -222,7 +243,7 @@ async function exportCard() {
             <span class="tag" v-for="k in quiz.keywords" :key="k">{{ k }}</span>{{ ' ' }}
           </div>
         </div>
-        <textarea class="iv-input" style="min-height:150px" :placeholder="m.quiz.placeholder" v-model="answerText" :disabled="fbShow"></textarea>
+        <textarea ref="answerEl" class="iv-input" :placeholder="m.quiz.placeholder" v-model="answerText" :disabled="fbShow" @input="fitAnswer"></textarea>
         <div class="iv-actions">
           <button class="btn" :disabled="!!busy || fbShow" @click="submitQuiz">{{ busy || '提交回答' }}</button>
         </div>
@@ -245,7 +266,7 @@ async function exportCard() {
           <p class="comment">{{ feedback.comment }}</p>
           <div class="compare">
             <div><span class="lbl">你的回答</span>{{ feedback.yourAnswer }}</div>
-            <div><span class="lbl">标准答案</span>{{ feedback.stdAnswer }}</div>
+            <div @contextmenu="onNoteSelect($event, quiz.question)"><span class="lbl">标准答案</span>{{ feedback.stdAnswer }}</div>
           </div>
           <!-- 本轮总结（全部答完后） -->
           <div v-if="finished && summary" style="margin-top:14px">
@@ -268,6 +289,9 @@ async function exportCard() {
       </div>
     </div>
 
+    <!-- 划句右键存笔记：浮动菜单（标准答案区域选中文字后右键触发） -->
+    <NoteSaver ref="noteSaver" />
+
     <!-- 单题放大 modal：宋体大题干 + 完整标准答案 + 上/下题导航（Esc / 点遮罩关闭，←/→ 翻题） -->
     <div class="pm-overlay" v-if="zoomIdx !== null && questions[zoomIdx]" @click.self="closeZoom">
       <div class="pm-paper" role="dialog" aria-label="题目放大查看">
@@ -278,7 +302,7 @@ async function exportCard() {
         </div>
         <div class="pm-body">
           <div class="pm-q">{{ questions[zoomIdx].title }}</div>
-          <div class="pm-answer"><span class="lbl">标准答案</span>{{ questions[zoomIdx].answer }}</div>
+          <div class="pm-answer" @contextmenu="onNoteSelect($event, questions[zoomIdx].title)"><span class="lbl">标准答案</span>{{ questions[zoomIdx].answer }}</div>
         </div>
         <div class="pm-nav">
           <button :disabled="zoomIdx === 0" @click="zoomPrev">← 上一题</button>

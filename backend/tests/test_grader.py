@@ -3,9 +3,9 @@
 
 - _validate_annotated：标记配对正确通过、未闭合/交叉/改动原文降级 None、
   嵌套规则、无标记按 None、非字符串输入；
-- detect_reciting：重合率与 0.3 阈值；
+- detect_reciting：重合率与 0.7 阈值（照抄/轻改判背诵，真实复述不判）；
 - score：评分 JSON 解析（正常 / 带 markdown 围栏 / 坏 JSON 容错），
-  加权总分、背诵时自然度强制 <=5、_clamp 收敛越界分。
+  加权总分、背诵时自然度强制 <=30、_clamp 收敛越界分。
 """
 import json
 
@@ -79,11 +79,35 @@ class TestValidateAnnotated:
 # ---------------------------------------------------------------------------
 
 class TestDetectReciting:
+    STANDARD = (
+        "GIL 是 CPython 的全局解释器锁，同一时刻只允许一个线程执行 Python 字节码。"
+        "它的影响是多线程无法真正并行计算，绕过的办法是用多进程或者把计算密集部分交给 C 扩展。"
+    )
+
     def test_verbatim_copy_is_reciting(self):
-        answer = "GIL 是 CPython 的全局解释器锁，同一时刻只允许一个线程执行 Python 字节码。"
-        ratio, is_reciting = GraderAgent.detect_reciting(answer, answer)
+        ratio, is_reciting = GraderAgent.detect_reciting(self.STANDARD, self.STANDARD)
         assert ratio == 1.0
         assert is_reciting is True
+
+    def test_light_edit_of_copy_is_reciting(self):
+        """轻微改写的照抄（实测重合率 ≈0.97）仍判背诵。"""
+        light_edit = (
+            "GIL 是 CPython 的全局解释器锁，同一时刻只允许一个线程执行 Python 字节码。"
+            "影响就是多线程没办法真正并行计算，绕过的办法是用多进程或者把计算密集部分交给 C 扩展。"
+        )
+        ratio, is_reciting = GraderAgent.detect_reciting(light_edit, self.STANDARD)
+        assert ratio > 0.9
+        assert is_reciting is True
+
+    def test_paraphrase_not_reciting(self):
+        """真实复述：考点全覆盖但用自己的话（实测重合率 ≈0.58），不判背诵。"""
+        paraphrase = (
+            "GIL 就是 CPython 解释器里的全局锁，任何时刻只有一个线程能跑字节码，"
+            "所以 Python 多线程跑 CPU 密集任务并不能并行，一般会改用多进程或者用 C 扩展来规避。"
+        )
+        ratio, is_reciting = GraderAgent.detect_reciting(paraphrase, self.STANDARD)
+        assert 0.5 < ratio < 0.7
+        assert is_reciting is False
 
     def test_unrelated_answer_not_reciting(self):
         ratio, is_reciting = GraderAgent.detect_reciting(
@@ -142,7 +166,7 @@ class TestScore:
         assert result["naturalness"] == 0.0
 
     async def test_reciting_forces_naturalness_down(self, fake_router, fake_llm):
-        """整段照抄标准答案：无论 LLM 给多少分，naturalness 强制 <=5。"""
+        """整段照抄标准答案：无论 LLM 给多少分，naturalness 强制 <=30。"""
         standard = "GIL 是 CPython 的全局解释器锁，同一时刻只允许一个线程执行 Python 字节码。"
         fake_llm.score = {
             "accuracy": 100, "logic": 100, "naturalness": 100,
@@ -150,9 +174,9 @@ class TestScore:
         }
         result = await _make_grader(fake_router).score(_question(standard), standard)
         assert result["is_reciting"] is True
-        assert result["naturalness"] == 5.0
-        # 总分：100*0.5 + 100*0.3 + 5*0.2 = 81
-        assert result["total"] == 81.0
+        assert result["naturalness"] == 30.0
+        # 总分：100*0.5 + 100*0.3 + 30*0.2 = 86
+        assert result["total"] == 86.0
 
     async def test_valid_annotated_answer_kept(self, fake_router, fake_llm):
         standard = "要点一。要点二。"

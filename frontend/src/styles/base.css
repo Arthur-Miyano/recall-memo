@@ -211,7 +211,7 @@ body::before {
 .iv-follow { margin-bottom:40px; }
 .iv-follow .tag { background: transparent; }
 .iv-input {
-  width:100%; min-height:200px; resize:vertical;
+  width:100%; min-height:260px; resize:none; overflow:hidden; /* 高度由 JS 随内容自动撑开 */
   border:1px solid var(--ink); background: var(--paper-hi);
   padding:22px 24px; font-family: var(--sans); font-size:16px; line-height:1.9;
   color: var(--ink); outline:none;

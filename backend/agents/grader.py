@@ -17,8 +17,12 @@ WEIGHT_ACCURACY = 0.5
 WEIGHT_LOGIC = 0.3
 WEIGHT_NATURALNESS = 0.2
 
-# 反背诵判定阈值：整段字符重合率 > 0.3 判为背诵痕迹
-RECITE_RATIO_THRESHOLD = 0.3
+# 反背诵判定阈值：整段字符重合率 > 0.7 判为背诵痕迹
+# （实测刻度：真实 paraphrase ≈ 0.58，轻微改写的照抄 ≈ 0.97，逐字照抄 = 1.0；
+#  0.7 落在两者之间——八股回答本就与标答共享大量术语，措辞接近不应误判）
+RECITE_RATIO_THRESHOLD = 0.7
+# 背诵痕迹的自然度封顶分（原 0~5 过苛：照抄也覆盖了考点，只压自然度维度，不打入零分）
+RECITE_NATURALNESS_CAP = 30.0
 
 _SCORE_SYSTEM_PROMPT = (
     "你是严格的技术面试评分专家。根据用户回答对照标准答案进行评分，"
@@ -54,7 +58,7 @@ class GraderAgent(BaseAgent):
         ratio, is_reciting = self.detect_reciting(user_answer, question.answer)
 
         naturalness_rule = (
-            "该回答已被判定有背诵痕迹（与标准答案逐字重合率过高），naturalness 必须给 0~5 分。"
+            f"该回答已被判定有背诵痕迹（与标准答案逐字重合率过高），naturalness 必须给 0~{RECITE_NATURALNESS_CAP:.0f} 分。"
             if is_reciting
             else "该回答重合率正常，naturalness 按表达是否自然、口语化程度在 0~100 评分。"
         )
@@ -64,7 +68,7 @@ class GraderAgent(BaseAgent):
             f"【题目关键词】{'、'.join(question.keywords or [])}\n\n"
             f"【用户回答】{user_answer}\n\n"
             f"【反背诵检测】用户回答与标准答案的整段字符重合率为 {ratio:.1%}，"
-            f"{'超过' if is_reciting else '未超过'} 30% 阈值。\n\n"
+            f"{'超过' if is_reciting else '未超过'} {RECITE_RATIO_THRESHOLD:.0%} 阈值。\n\n"
             "请按以下维度评分（均为 0~100 的数字）：\n"
             "1. accuracy：核心考点准确性，是否覆盖标准答案的关键技术点；\n"
             "2. logic：逻辑清晰度，回答结构是否条理分明；\n"
@@ -90,9 +94,9 @@ class GraderAgent(BaseAgent):
         accuracy = _clamp(parsed.get("accuracy"))
         logic = _clamp(parsed.get("logic"))
         naturalness = _clamp(parsed.get("naturalness"))
-        # 背诵痕迹：无论 LLM 输出如何，自然度强制压到 0~5 分（文档 2.4）
+        # 背诵痕迹：无论 LLM 输出如何，自然度强制压到 0~30 分（文档 2.4，放宽后口径）
         if is_reciting:
-            naturalness = min(naturalness, 5.0)
+            naturalness = min(naturalness, RECITE_NATURALNESS_CAP)
 
         total = round(
             accuracy * WEIGHT_ACCURACY + logic * WEIGHT_LOGIC + naturalness * WEIGHT_NATURALNESS,
