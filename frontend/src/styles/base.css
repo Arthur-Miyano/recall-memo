@@ -415,15 +415,26 @@ body::before {
 }
 .crab:hover .crab-tip { opacity:1; }
 
-/* 对话面板：resize:both 允许拖拽右下角手柄调整宽高，overflow:hidden 使手柄生效；
-   实际宽高由 InkCrab.vue 内联 style 控制（localStorage 记忆），此处只约束范围 */
+/* 对话面板：宽高由 InkCrab.vue 内联 style 控制（右下角自定义手柄拖动 + localStorage 记忆），
+   此处只约束范围；overflow:hidden 防内容溢出圆角外 */
 .chat-panel {
   position:fixed; left:28px; top:170px; z-index:calc(var(--z-nav) + 1);
   width:380px; height:460px; display:none; flex-direction:column;
   min-width:320px; min-height:360px; max-width:90vw; max-height:85vh;
-  resize:both; overflow:hidden;
+  overflow:hidden;
   background: var(--paper-hi); border:1px solid var(--ink);
   box-shadow: 6px 8px 0 rgba(25,25,25,.16);
+}
+/* 自定义缩放手柄：右下角两条斜线角标（原生 resize 手柄太小难抓，弃用） */
+.chat-resize-grip {
+  position:absolute; right:0; bottom:0; width:22px; height:22px;
+  cursor:nwse-resize; touch-action:none; z-index:2;
+  background: linear-gradient(135deg,
+    transparent 0 58%, var(--ink-25) 58% 63%, transparent 63% 76%, var(--ink-25) 76% 81%, transparent 81%);
+}
+.chat-resize-grip:hover {
+  background: linear-gradient(135deg,
+    transparent 0 58%, var(--ink) 58% 63%, transparent 63% 76%, var(--ink) 76% 81%, transparent 81%);
 }
 .chat-panel.show { display:flex; animation: screenIn .3s var(--ease-out); }
 .chat-head {

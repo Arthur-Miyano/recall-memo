@@ -12,8 +12,8 @@
 //   - 拖动：pointerdown/move/up，位移 < 6px 视为点击（开合面板），否则为拖动；拖动中身体定格、双钳加速
 //   - 吐泡泡：bubbles 数组渲染墨线圈，bubbleUp 上升消散；定时器每 4.5s 吐一个，burst() 连吐三个
 //   - 面板开合：chat-panel.show 的 screenIn 动画，面板位置跟随螃蟹（下半屏则向上开）
-//   - 面板缩放：CSS resize:both（手柄在面板右下角，与螃蟹拖动互不干扰），尺寸存 localStorage，
-//     ResizeObserver 监听保存；panelStyle 按当前尺寸钳制在视口内
+//   - 面板缩放：右下角自定义手柄（pointer capture 拖动），尺寸存 localStorage 下次打开恢复；
+//     panelSize 是唯一尺寸数据源（拖哪写哪，不经 ResizeObserver，无反馈环）
 import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { assistant } from '../mock/assistant'
 import {
@@ -220,36 +220,38 @@ onUnmounted(() => {
 })
 
 /* ---------- 对话面板 ---------- */
-// 面板尺寸：CSS resize:both 拖拽右下角手柄调整；ResizeObserver 保存到 localStorage，下次打开恢复
+// 面板尺寸：右下角自定义手柄拖动调整（pointer capture，与螃蟹拖动互不干扰）；
+// 尺寸存 localStorage，下次打开恢复。panelSize 是唯一数据源：
+// 手柄拖动直接写 panelSize，不经 ResizeObserver——原生 resize 手柄太小难抓，
+// 且 content-box/border-box 口径差曾导致"松手慢慢缩回"的反馈环
 const panelSize = ref({ w: 380, h: 460 })
 try {
   const saved = JSON.parse(localStorage.getItem('recall-chat-size'))
   if (saved && Number.isFinite(saved.w) && Number.isFinite(saved.h)) panelSize.value = saved
 } catch { /* 损坏数据忽略，用默认尺寸 */ }
 
-let resizeObserver = null
-
-onMounted(() => {
-  // 监听面板尺寸变化（resize 手柄拖动），写入 localStorage；面板隐藏时尺寸为 0，不保存
-  resizeObserver = new ResizeObserver(entries => {
-    const entry = entries[0]
-    if (!entry || !panelShow.value) return
-    // 【缩回 bug 根因】全局 box-sizing:border-box（base.css）+ 面板 1px 边框：
-    // panelStyle 内联写的 width/height 是 border-box，而 contentRect 是 content-box（小 2px）。
-    // 若把 contentRect 写回 panelSize → 内联 width 收窄 2px → content-box 再小 2px → RO 再触发，
-    // 形成每帧 -2px 的反馈环，表现为"松开手柄后面板慢慢缩回"。
-    // 修法：统一用 border-box 尺寸（borderBoxSize，退化为 offsetWidth/Height），读写同口径即收敛。
-    const bb = entry.borderBoxSize?.[0]
-    const w = Math.round(bb ? bb.inlineSize : entry.target.offsetWidth)
-    const h = Math.round(bb ? bb.blockSize : entry.target.offsetHeight)
-    if (w < 10 || h < 10) return
-    if (w === panelSize.value.w && h === panelSize.value.h) return  // 尺寸未变不写回，避免无谓重渲染
-    panelSize.value = { w, h }
-    localStorage.setItem('recall-chat-size', JSON.stringify(panelSize.value))
-  })
-  if (panelEl.value) resizeObserver.observe(panelEl.value)
-})
-onUnmounted(() => { resizeObserver?.disconnect() })
+// 手柄拖动：pointerdown 记起点尺寸，move 钳制范围写入，up 持久化
+const PANEL_MIN = { w: 320, h: 360 }
+let gripDrag = null   // { x, y, w, h } 拖动起点
+function onGripDown(e) {
+  e.preventDefault()
+  e.target.setPointerCapture(e.pointerId)   // 捕获后续 move/up，拖出手柄也不丢
+  gripDrag = { x: e.clientX, y: e.clientY, w: panelSize.value.w, h: panelSize.value.h }
+}
+function onGripMove(e) {
+  if (!gripDrag) return
+  const maxW = Math.round(window.innerWidth * 0.9)
+  const maxH = Math.round(window.innerHeight * 0.85)
+  panelSize.value = {
+    w: Math.min(Math.max(gripDrag.w + e.clientX - gripDrag.x, PANEL_MIN.w), maxW),
+    h: Math.min(Math.max(gripDrag.h + e.clientY - gripDrag.y, PANEL_MIN.h), maxH),
+  }
+}
+function onGripUp() {
+  if (!gripDrag) return
+  gripDrag = null
+  localStorage.setItem('recall-chat-size', JSON.stringify(panelSize.value))
+}
 
 // 面板跟随螃蟹：水平对齐并钳制在视口内；螃蟹在下半屏时面板向上开，避免被裁掉
 // 位置随 panelSize 一起钳制：调整后若超出视口则收回到可见范围
@@ -356,7 +358,7 @@ function send() {
     <span class="crab-tip">记忆助手 · 点击召唤 · 按住拖我</span>
   </div>
 
-  <!-- 对话面板：位置跟随螃蟹；resize:both 可拖拽右下角调整宽高（尺寸记忆在 localStorage） -->
+  <!-- 对话面板：位置跟随螃蟹；右下角自定义手柄拖动调宽高（尺寸记忆在 localStorage） -->
   <div class="chat-panel" :class="{ show: panelShow }" :style="panelStyle" ref="panelEl">
     <div class="chat-head">
       <button class="sess-btn" title="对话列表" @click="toggleSessions">≡ 对话</button>
@@ -378,6 +380,13 @@ function send() {
       <input v-model="inputText" placeholder="问点什么…" @keydown.enter="send">
       <button @click="send">发送</button>
     </div>
+
+    <!-- 缩放手柄：右下角斜线角标，pointer capture 拖动调宽高 -->
+    <div
+      class="chat-resize-grip" title="拖动调整大小"
+      @pointerdown="onGripDown" @pointermove="onGripMove"
+      @pointerup="onGripUp" @pointercancel="onGripUp"
+    ></div>
 
     <!-- 会话抽屉：面板内覆盖层，列表（标题 + 时间 + 条数），hover 出删除 ✕，顶部「+ 新对话」 -->
     <div class="chat-sessions" v-if="sessionsOpen">
