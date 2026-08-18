@@ -313,7 +313,6 @@ async function exportCard() {
         <div class="iv-follow"><span class="tag">{{ quiz.followTag }}</span></div>
         <div style="margin-bottom:16px">
           <button class="btn btn--ghost" style="padding:7px 20px;font-size:12px" @click="toggleKw">提示（关键词）</button>
-          <button class="btn btn--ghost" style="padding:7px 20px;font-size:12px;margin-left:8px" disabled title="语音输入：预留接口，后续迭代开放">语音输入（预留）</button>
           <div class="kw-hint" :class="{ show: kwShow }">
             <span class="tag" v-for="k in quiz.keywords" :key="k">{{ k }}</span>{{ ' ' }}
           </div>

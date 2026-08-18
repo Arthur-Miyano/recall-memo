@@ -188,7 +188,6 @@ function next() {
         <div class="iv-actions">
           <button class="btn" :disabled="!!busy" @click="submit">{{ busy || '提交回答' }}</button>
           <button class="btn btn--ghost" :disabled="!!busy" @click="skip">跳过本题</button>
-          <button class="btn btn--ghost" disabled title="语音输入：预留接口，后续迭代开放">语音输入（预留）</button>
           <span class="spacer" style="flex:1"></span>
           <span class="iv-note">{{ iv.note }}</span>
         </div>
