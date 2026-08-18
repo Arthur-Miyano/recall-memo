@@ -2,7 +2,8 @@
 // 各视图用法：try { 真实数据 } catch { console.warn + 回退 mock } —— 页面永远不白屏
 import { ref } from 'vue'
 
-const BASE_URL = 'http://localhost:8000'
+// 相对路径：开发模式走 vite proxy（/api → localhost:8000），生产模式由 FastAPI 同源托管
+const BASE_URL = ''
 
 // 全局离线标记：仅「网络层失败 → 组件回退 mock 演示数据」时置位（App.vue 据此显示角标）
 // 4xx/5xx 业务错误（如导入校验）不算离线；任意请求成功后自动清除

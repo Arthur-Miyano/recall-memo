@@ -1,9 +1,12 @@
 # -*- coding: utf-8 -*-
 """FastAPI 入口：uvicorn main:app --workers 1"""
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from api import assistant, bank, health, home, llm, notes, sessions, settings, stats
 from database import init_db
@@ -36,3 +39,22 @@ app.include_router(bank.router, prefix="/api")
 app.include_router(settings.router, prefix="/api")
 app.include_router(assistant.router, prefix="/api")
 app.include_router(notes.router, prefix="/api")
+
+# 生产模式：托管前端构建产物（frontend/dist），SPA 路由回退到 index.html
+# 开发模式不存在 dist 时跳过，走 Vite dev server + /api 代理
+DIST_DIR = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+if DIST_DIR.is_dir():
+    assets_dir = DIST_DIR / "assets"
+    if assets_dir.is_dir():
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa_fallback(full_path: str):
+        # 未匹配的 /api 路径仍返回 404，不回退成页面
+        if full_path.startswith("api/") or full_path == "api":
+            raise HTTPException(status_code=404, detail="Not Found")
+        # 静态文件原样返回；其余路径（前端路由）统一回退 index.html
+        candidate = DIST_DIR / full_path
+        if full_path and candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(DIST_DIR / "index.html")

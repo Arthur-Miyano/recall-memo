@@ -78,16 +78,19 @@ class TestEstimateCost:
 
 def _add_usage(db, model="deepseek-chat", provider="deepseek", days_ago=0,
                prompt=1000, completion=500, cache_hit=0, cache_miss=None, hour=3):
-    """插入一条用量；hour 为 UTC 小时（默认 3 点 = 本地 11 点高峰外/内取决于时区，
-    测试里只关心聚合数字，用固定值即可）。"""
+    """插入一条用量；days_ago>0 时锚定今天 UTC hour 点再往前推（固定峰谷档位，
+    不随跑测试的时刻变化）；days_ago=0 直接用当前时间。"""
+    created = datetime.now(timezone.utc) if not days_ago else (
+        datetime.now(timezone.utc).replace(hour=hour, minute=0, second=0, microsecond=0)
+        - timedelta(days=days_ago)
+    )
     row = LLMUsage(
         provider=provider, model=model,
         prompt_tokens=prompt, completion_tokens=completion,
         total_tokens=prompt + completion,
         cache_hit_tokens=cache_hit,
         cache_miss_tokens=cache_miss if cache_miss is not None else prompt - cache_hit,
-        created_at=datetime(2026, 8, 18, hour, tzinfo=timezone.utc) - timedelta(days=days_ago)
-        if days_ago else datetime.now(timezone.utc),
+        created_at=created,
     )
     db.add(row)
     db.commit()
@@ -118,8 +121,8 @@ class TestLlmUsageApi:
         assert data["totals"]["requests"] == 3
         assert data["totals"]["unpriced_requests"] == 1
         assert data["totals"]["tokens"] == 1_000_000 + 600_000 + 1_000_000
-        old = estimate_cost("deepseek", "deepseek-chat", 0, 1_000_000, 0,
-                            now - timedelta(days=40))
+        old_at = now.replace(hour=3, minute=0, second=0, microsecond=0) - timedelta(days=40)
+        old = estimate_cost("deepseek", "deepseek-chat", 0, 1_000_000, 0, old_at)
         assert data["totals"]["cost"] == round(priced + old, 2)
         # 每日只含窗口内：今天 2 次，但 cost 只有 DeepSeek 那一次
         today = data["daily"][-1]
