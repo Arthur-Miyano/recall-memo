@@ -17,6 +17,11 @@ const PROVIDERS = [
   { label: '智谱', key: null },
   { label: '豆包', key: null },
 ]
+// 各 Provider 的常用模型建议（datalist 提示，仍可自由输入其他型号）
+const MODEL_SUGGESTIONS = {
+  deepseek: ['deepseek-v4-flash', 'deepseek-v4-pro'],
+  kimi: ['moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k'],
+}
 const providerOn = ref(s.providerOn)
 const model = ref(s.model)
 const apiKey = ref('')
@@ -101,7 +106,10 @@ async function save() {
     </div>
     <div class="set-row">
       <span class="lbl">模型</span>
-      <input class="set-input" v-model="model">
+      <input class="set-input" v-model="model" list="model-suggestions">
+      <datalist id="model-suggestions">
+        <option v-for="m in MODEL_SUGGESTIONS[providerKey] || []" :key="m" :value="m" />
+      </datalist>
     </div>
     <div class="set-row">
       <span class="lbl">API KEY</span>

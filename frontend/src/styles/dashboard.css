@@ -286,3 +286,16 @@
 .ip-result li .mk.ai { color: var(--seal); }
 .ip-result li .mk.err { color: var(--seal); }
 .ip-result li .why { font-family: var(--mono); font-size: 11px; color: var(--ink-45); }
+/* 多文件待传列表 */
+.ip-files { margin-top: 10px; font-size: 13px; }
+.ip-files li { list-style: none; display: flex; gap: 12px; align-items: baseline; padding: 5px 0; border-bottom: 1px dashed var(--ink-45); }
+.ip-file-name { color: var(--ink); }
+.ip-file-size { font-family: var(--mono); font-size: 11px; color: var(--ink-45); }
+/* 后台任务进度 */
+.ip-progress { margin-top: 18px; border-top: 1px solid var(--ink); padding-top: 14px; }
+.ip-progress .sum { font-family: var(--mono); font-size: 12px; letter-spacing: .08em; color: var(--ink-70); margin-bottom: 10px; }
+.ip-stage { font-size: 14px; margin-bottom: 10px; }
+.ip-bar { height: 6px; border: 1px solid var(--ink); margin-bottom: 10px; }
+.ip-bar i { display: block; height: 100%; background: var(--ink); transition: width .4s var(--ease-out); }
+/* 逐文件结果分组 */
+.ip-file-result + .ip-file-result { margin-top: 14px; border-top: 1px dashed var(--ink-45); padding-top: 10px; }

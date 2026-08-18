@@ -29,3 +29,17 @@ export const postBankImportFile = (file, dedupe = true) => {
   form.append('dedupe', dedupe ? 'true' : 'false')
   return requestForm('/api/bank/import-file', form)
 }
+
+/* ---------- 录入题库（后台任务版：多文件 + 进度可查） ---------- */
+// 创建任务：files 多文件 与 text 粘贴文本可同时给 → {job_id, status}
+export const postBankImportJob = ({ files = [], text = '', dedupe = true }) => {
+  const form = new FormData()
+  for (const f of files) form.append('files', f)
+  if (text.trim()) form.append('text', text)
+  form.append('dedupe', dedupe ? 'true' : 'false')
+  return requestForm('/api/bank/import-jobs', form)
+}
+// 任务进度：{status, stage, stage_done, stage_total, file_index, file_count, result?}
+export const getBankImportJob = (id) => request(`/api/bank/import-jobs/${id}`)
+// 最近一次任务：打开面板时调用，还在跑就重新挂上轮询
+export const getBankImportJobLatest = () => request('/api/bank/import-jobs/latest')

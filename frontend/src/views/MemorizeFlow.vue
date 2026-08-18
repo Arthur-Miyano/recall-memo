@@ -12,15 +12,17 @@
 //   - 关键词提示 kw-hint.show、反馈面板 quiz-feedback.show（drop 动画）
 //   - 展示阶段题目卡片点击 → .paper-modal 单题放大（宋体大题干 + 完整答案 + 上/下题导航，Esc/遮罩关闭）
 //   - 标准答案区域选中句子后右键 → NoteSaver 浮动菜单，存进笔记（> 引用块追加，见 api/notes）
-import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { ref, onMounted, onUnmounted, onBeforeUnmount, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { memorizeSession as m } from '../mock/memorize'
 import { createSession, startQuiz as apiStartQuiz, getCurrent, submitAnswer } from '../api'
 import { exportRecallCard } from '../utils/recallCard'
+import { useSessionStore } from '../stores/session'
 import NoteSaver from '../components/NoteSaver.vue'
 
 const route = useRoute()
 const router = useRouter()
+const sessionStore = useSessionStore()
 
 // ---- mock 兜底态（后端不可用时展示演示数据） ----
 const useMock = ref(false)
@@ -62,10 +64,54 @@ function toFeedback(score, yourAnswer, stdAnswer) {
   }
 }
 
+// ---- 会话快照：开始训练后题目固定，切页再回来原样恢复 ----
+// 只有首页「开始记忆」带新 fresh token 跳转时才重开一轮；其余入口（含浏览器后退）都恢复快照
+function saveSnapshot(fresh) {
+  sessionStore.memorize = {
+    fresh: fresh ?? sessionStore.memorize?.fresh ?? null,
+    sessionId: sessionId.value,
+    topLeft: topLeft.value,
+    topRight: topRight.value,
+    questions: questions.value,
+    kwMap: { ...kwMap },
+    quizzing: quizzing.value,
+    quiz: quiz.value,
+    answerText: answerText.value,
+    feedback: feedback.value,
+    fbShow: fbShow.value,
+    finished: finished.value,
+    summary: summary.value,
+    useMock: useMock.value,
+  }
+}
+
+function restoreSnapshot(snap) {
+  sessionId.value = snap.sessionId
+  topLeft.value = snap.topLeft
+  topRight.value = snap.topRight
+  questions.value = snap.questions
+  Object.assign(kwMap, snap.kwMap)
+  quizzing.value = snap.quizzing
+  quiz.value = snap.quiz
+  answerText.value = snap.answerText
+  feedback.value = snap.feedback
+  fbShow.value = snap.fbShow
+  finished.value = snap.finished
+  summary.value = snap.summary
+  useMock.value = snap.useMock
+}
+
 onMounted(async () => {
   const mode = route.query.mode === 'review' ? 'review' : 'memorize'
   const count = Number(route.query.count) || 3
   const stack = typeof route.query.stack === 'string' ? route.query.stack : null
+  const fresh = typeof route.query.fresh === 'string' ? route.query.fresh : null
+  // 有快照且本次不是「新的开始」（无 fresh 或 fresh 与快照一致）→ 恢复，不重抽题
+  const snap = sessionStore.memorize
+  if (snap && (!fresh || snap.fresh === fresh)) {
+    restoreSnapshot(snap)
+    return
+  }
   try {
     const d = await createSession(mode, stack, count)
     sessionId.value = d.session_id
@@ -79,7 +125,11 @@ onMounted(async () => {
     console.warn('[memorize] 创建会话失败，回退 mock 演示数据：', e.message)
     useMock.value = true
   }
+  saveSnapshot(fresh)
 })
+
+// 离开页面时保存快照，回来恢复
+onBeforeUnmount(() => saveSnapshot())
 
 // 开始考核：真实模式调 start_quiz + current；mock 模式仅切 UI
 async function startQuiz() {

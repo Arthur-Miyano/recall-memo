@@ -1,7 +1,10 @@
 # -*- coding: utf-8 -*-
 """题库总览接口：技术栈 → 知识点两级分组 + 背诵状态格 + 圈选重点背诵 + 录入题库。"""
+import asyncio
 import io
-from typing import Optional
+import time
+import uuid
+from typing import Any, Callable, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
@@ -10,6 +13,7 @@ from sqlmodel import Session as DBSession, select
 from agents import importer
 from agents.base import SCORE_PASS_THRESHOLD
 from api.deps import get_db
+import database
 from models import Question, QuestionFocus, Record, RetryQueueItem
 
 router = APIRouter(prefix="/bank", tags=["bank"])
@@ -146,14 +150,21 @@ def _title_of(stem: str) -> str:
 
 async def _run_import(text: str, dedupe: bool, db: DBSession,
                       max_questions: Optional[int] = None,
-                      force_llm_extract: bool = False) -> dict:
+                      force_llm_extract: bool = False,
+                      progress: Optional[Callable[[str, int, int], None]] = None) -> dict:
     """录入清洗共用管线（/import 与 /import-file 共用）：
 
     解析 → LLM 提取/补全 → 相似度去重 → 入库。
     max_questions 在规整字段后截断条目数（同时限制 LLM 补全的规模），方便测试与分批导入。
     force_llm_extract=True 时跳过规则分段，整段按块走 LLM 提取真问题
     （PDF 提取的文本没有「答案：」标签行，规则分段会把正文段落当成题干）。
+    progress 为可选回调 progress(阶段名, 已完成, 总数)，供后台录入任务汇报进度。
     """
+
+    def _report(stage: str, done: int, total: int) -> None:
+        if progress:
+            progress(stage, done, total)
+
     result: dict = {"imported": [], "skipped": [], "enriched": [], "errors": []}
     if not text.strip():
         result["errors"].append({"title": "（空输入）", "reason": "没有可解析的内容"})
@@ -163,7 +174,9 @@ async def _run_import(text: str, dedupe: bool, db: DBSession,
     if force_llm_extract:
         # 强制路径：整段切块走 LLM，不经过规则分段
         try:
-            extracted, extract_errors = await importer.extract_questions_with_llm(text)
+            extracted, extract_errors = await importer.extract_questions_with_llm(
+                text, progress=lambda i, n: _report("LLM 提取真问题", i, n),
+            )
             items = extracted
             for err in extract_errors:
                 result["errors"].append({"title": "（LLM 提取）", "reason": err})
@@ -173,6 +186,7 @@ async def _run_import(text: str, dedupe: bool, db: DBSession,
     else:
         items, leftovers = importer.parse_text(text)
         if leftovers:
+            _report("LLM 结构化提取", 0, 1)
             try:
                 items += await importer.llm_extract(leftovers)
             except importer.LLMProviderUnavailableError as exc:
@@ -184,6 +198,7 @@ async def _run_import(text: str, dedupe: bool, db: DBSession,
             except ValueError as exc:
                 for chunk in leftovers:
                     result["errors"].append({"title": _title_of(chunk), "reason": f"LLM 提取失败：{exc}"})
+            _report("LLM 结构化提取", 1, 1)
 
     # 3. 规整字段（技术栈归一化），丢掉连题干都没有的
     valid: list[dict] = []
@@ -201,17 +216,20 @@ async def _run_import(text: str, dedupe: bool, db: DBSession,
         valid = valid[:max_questions]
 
     # 4. LLM 批量补全缺 answer / tech_stack 的题
+    _report("AI 补全缺字段", 0, 1)
     try:
         enrich_marks = await importer.llm_enrich(valid)
     except importer.LLMProviderUnavailableError:
         enrich_marks = [{"fields": []} for _ in valid]  # 降级：不补全，后面按缺字段进 errors
     except ValueError:
         enrich_marks = [{"fields": []} for _ in valid]
+    _report("AI 补全缺字段", 1, 1)
 
     # 5. 去重 + 入库
     existing_stems = [q.stem for q in db.exec(select(Question)).all()]
     accepted_stems: list[str] = []
-    for it, mark in zip(valid, enrich_marks):
+    for idx, (it, mark) in enumerate(zip(valid, enrich_marks), start=1):
+        _report("去重入库", idx, len(valid))
         title = _title_of(it["stem"])
         stack = importer.normalize_stack(it.get("tech_stack")) or "python"
         answer = str(it.get("answer") or "").strip()
@@ -319,3 +337,147 @@ async def bank_import_file(
     force = force_llm_extract or ext == ".pdf"
     return await _run_import(text, dedupe, db, max_questions, force)
 
+
+
+# ---------- 后台录入任务（多文件 + 进度可查） ----------
+
+# 录入任务注册表：单机单用户，内存态即可；任务随进程生命周期，重启即清空
+IMPORT_JOBS: dict[str, dict[str, Any]] = {}
+_IMPORT_JOBS_KEEP = 20  # 只保留最近 N 个任务，防无限增长
+
+
+def _new_job(label: str) -> dict[str, Any]:
+    job: dict[str, Any] = {
+        "id": uuid.uuid4().hex[:12],
+        "status": "running",          # running / done / error
+        "label": label,               # 来源描述：文件名列表或「粘贴文本」
+        "file_index": 0,              # 当前处理到第几个来源（从 1 起）
+        "file_count": 0,
+        "stage": "排队中",
+        "stage_done": 0,
+        "stage_total": 0,
+        "result": None,               # 完成后的逐文件结果 + 总计
+        "error": None,
+        "created_at": time.time(),
+        "finished_at": None,
+    }
+    IMPORT_JOBS[job["id"]] = job
+    if len(IMPORT_JOBS) > _IMPORT_JOBS_KEEP:  # 按创建时间淘汰最旧的
+        for old_id in sorted(IMPORT_JOBS, key=lambda k: IMPORT_JOBS[k]["created_at"])[:-_IMPORT_JOBS_KEEP]:
+            IMPORT_JOBS.pop(old_id, None)
+    return job
+
+
+def _decode_source_text(filename: str, raw: bytes) -> tuple[str, bool]:
+    """按扩展名提取文本：.pdf 走 pypdf（需强制 LLM 提取），.md/.txt/.json 直接解码。"""
+    import os
+    ext = os.path.splitext(filename or "")[1].lower()
+    if ext == ".pdf":
+        return _extract_pdf_text(raw), True
+    if ext in _TEXT_EXTS:
+        try:
+            return raw.decode("utf-8"), False
+        except UnicodeDecodeError:
+            raise HTTPException(status_code=400, detail=f"{filename}：文本解码失败（请使用 UTF-8 编码）")
+    raise HTTPException(
+        status_code=400,
+        detail=f"{filename}：不支持的文件类型 {ext or '（无扩展名）'}，仅支持 .pdf / .md / .txt / .json",
+    )
+
+
+async def _run_import_job(
+    job: dict[str, Any],
+    sources: list[tuple[str, bytes]],
+    text_input: Optional[str],
+    dedupe: bool,
+) -> None:
+    """后台任务体：逐来源走 _run_import 管线，进度实时写回 job 供前端轮询。
+
+    单个文件解析失败不中断整体：记为该文件的 errors 继续下一个。
+    """
+    try:
+        pending: list[tuple[str, str, bool]] = []  # (来源名, 文本, 是否强制 LLM 提取)
+        file_errors: list[dict[str, str]] = []
+        if text_input and text_input.strip():
+            pending.append(("粘贴文本", text_input, False))
+        for name, raw in sources:
+            try:
+                text, force = _decode_source_text(name, raw)
+                pending.append((name, text, force))
+            except HTTPException as exc:
+                file_errors.append({"file": name, "reason": str(exc.detail)})
+        job["file_count"] = len(pending)
+
+        results: list[dict[str, Any]] = []
+        # 注意用 database.engine 动态引用（不要 from-import）：测试会 monkeypatch 替换引擎
+        with DBSession(database.engine) as db:
+            for idx, (name, text, force) in enumerate(pending, start=1):
+                job["file_index"] = idx
+
+                def _progress(stage: str, done: int, total: int) -> None:
+                    job["stage"] = stage
+                    job["stage_done"] = done
+                    job["stage_total"] = total
+
+                r = await _run_import(text, dedupe, db, None, force, progress=_progress)
+                r["file"] = name
+                results.append(r)
+        totals = {
+            key: sum(len(r[key]) for r in results) for key in ("imported", "skipped", "enriched", "errors")
+        }
+        job["result"] = {"files": results, "totals": totals, "file_errors": file_errors}
+        job["status"] = "done"
+        job["stage"] = "完成"
+    except Exception as exc:  # 任务级失败：置 error，前端轮询可见
+        job["status"] = "error"
+        job["error"] = str(exc)
+    finally:
+        job["finished_at"] = time.time()
+
+
+@router.post("/import-jobs", status_code=202)
+async def bank_import_job_create(
+    files: Optional[list[UploadFile]] = File(None),  # 多文件：.pdf / .md / .txt / .json
+    text: Optional[str] = Form(None),               # 粘贴文本（与文件可同时给）
+    dedupe: bool = Form(True),
+):
+    """创建后台录入任务：支持多文件 + 粘贴文本，立即返回 job_id，前端轮询进度。
+
+    任务在后台协程执行，关闭面板/切页面不影响录入；重开面板用 GET latest 重新挂上。
+    """
+    sources: list[tuple[str, bytes]] = []
+    for f in files or []:
+        raw = await f.read()
+        if raw:
+            sources.append((f.filename or "未命名文件", raw))
+    if not sources and not (text and text.strip()):
+        raise HTTPException(status_code=400, detail="没有可录入的内容（未选择文件也未粘贴文本）")
+    label = "、".join(n for n, _ in sources) or "粘贴文本"
+    job = _new_job(label)
+    asyncio.create_task(_run_import_job(job, sources, text, dedupe))
+    return {"job_id": job["id"], "status": job["status"]}
+
+
+def _job_view(job: dict[str, Any]) -> dict[str, Any]:
+    return {k: job.get(k) for k in (
+        "id", "status", "label", "file_index", "file_count",
+        "stage", "stage_done", "stage_total", "result", "error",
+        "created_at", "finished_at",
+    )}
+
+
+@router.get("/import-jobs/latest")
+def bank_import_job_latest():
+    """最近一次录入任务：前端打开录入面板时调用，任务还在跑就重新挂上轮询。"""
+    if not IMPORT_JOBS:
+        return {"job": None}
+    return {"job": _job_view(max(IMPORT_JOBS.values(), key=lambda j: j["created_at"]))}
+
+
+@router.get("/import-jobs/{job_id}")
+def bank_import_job_status(job_id: str):
+    """录入任务进度：status/stage/进度计数；完成后带 result（逐文件清单 + 总计）。"""
+    job = IMPORT_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在或已被清理")
+    return _job_view(job)

@@ -171,3 +171,68 @@ class TestBankImportApi:
         assert len(body["imported"]) == 1
         assert body["imported"][0]["tech_stack"] == "database"
         assert any("提取真正的面试题" in c for c in fake_llm.calls)
+
+
+# bank/import-jobs：后台录入任务（多文件 + 进度轮询 + latest 重挂）
+class TestImportJobs:
+    def _wait_done(self, client, job_id: str, rounds: int = 100) -> dict:
+        """轮询任务直到结束（后台协程在 TestClient portal 的事件循环里持续推进）。"""
+        import time
+        for _ in range(rounds):
+            j = client.get(f"/api/bank/import-jobs/{job_id}").json()
+            if j["status"] != "running":
+                return j
+            time.sleep(0.05)
+        raise AssertionError(f"任务 {job_id} 长时间未结束：{j}")
+
+    def test_job_text_runs_to_done(self, client):
+        """粘贴文本创建任务：202 接受 → 轮询到 done → 结果含入库题 → latest 可重挂。"""
+        resp = client.post(
+            "/api/bank/import-jobs",
+            data={"text": "什么是闭包？\n答案：函数携带定义时的自由变量。\n技术栈：python", "dedupe": "true"},
+        )
+        assert resp.status_code == 202
+        job_id = resp.json()["job_id"]
+
+        j = self._wait_done(client, job_id)
+        assert j["status"] == "done"
+        assert j["result"]["totals"]["imported"] == 1
+        assert j["result"]["files"][0]["file"] == "粘贴文本"
+
+        latest = client.get("/api/bank/import-jobs/latest").json()["job"]
+        assert latest["id"] == job_id
+        assert latest["status"] == "done"
+
+    def test_job_multi_files(self, client):
+        """多文件一次提交：两个 .txt 各自走管线，结果按文件分组。"""
+        files = [
+            ("files", ("a.txt", "什么是迭代器？\n答案：实现 __iter__/__next__ 的对象。\n技术栈：python".encode("utf-8"), "text/plain")),
+            ("files", ("b.txt", "什么是索引？\n答案：加速查询的数据结构。\n技术栈：database".encode("utf-8"), "text/plain")),
+        ]
+        resp = client.post("/api/bank/import-jobs", files=files, data={"dedupe": "true"})
+        assert resp.status_code == 202
+        j = self._wait_done(client, resp.json()["job_id"])
+        assert j["status"] == "done"
+        assert j["result"]["totals"]["imported"] == 2
+        assert {f["file"] for f in j["result"]["files"]} == {"a.txt", "b.txt"}
+
+    def test_job_empty_rejected(self, client):
+        """既无文件也无文本：400。"""
+        resp = client.post("/api/bank/import-jobs", data={"dedupe": "true"})
+        assert resp.status_code == 400
+
+    def test_job_not_found(self, client):
+        assert client.get("/api/bank/import-jobs/nope").status_code == 404
+
+    def test_job_bad_file_recorded_not_fatal(self, client):
+        """单个文件类型不支持：记为该文件的错误，不拖垮其他文件。"""
+        files = [
+            ("files", ("bad.exe", b"\x00\x01", "application/octet-stream")),
+            ("files", ("ok.txt", "什么是生成器？\n答案：yield 返回的迭代器。\n技术栈：python".encode("utf-8"), "text/plain")),
+        ]
+        resp = client.post("/api/bank/import-jobs", files=files, data={"dedupe": "true"})
+        assert resp.status_code == 202
+        j = self._wait_done(client, resp.json()["job_id"])
+        assert j["status"] == "done"
+        assert j["result"]["totals"]["imported"] == 1
+        assert j["result"]["file_errors"][0]["file"] == "bad.exe"

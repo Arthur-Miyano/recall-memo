@@ -388,18 +388,25 @@ async def _extract_chunk_with_llm(chunk: str, index: int) -> tuple[list[dict[str
     return [], f"第 {index} 块 LLM 提取失败"
 
 
-async def extract_questions_with_llm(text: str) -> tuple[list[dict[str, Any]], list[str]]:
+async def extract_questions_with_llm(
+    text: str,
+    progress: Optional[Any] = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
     """长文本强制 LLM 结构化提取真问题（PDF 导入路径）：
 
     预处理（控制字符/页眉页脚）→ 按段落边界切块（约 2800 字）→ 每块一次 LLM 调用。
     单块失败不拖垮整体：记入返回的 errors。LLM 整体不可用抛 LLMProviderUnavailableError。
+    progress 为可选回调 progress(当前块号, 总块数)，供后台任务汇报进度。
 
     返回 (items, errors)：items 可能仍缺 answer / tech_stack，交给后续补全环节。
     """
     cleaned = clean_pdf_text(text)
+    chunks = _split_for_llm(cleaned)
     items: list[dict[str, Any]] = []
     errors: list[str] = []
-    for i, chunk in enumerate(_split_for_llm(cleaned), start=1):
+    for i, chunk in enumerate(chunks, start=1):
+        if progress:
+            progress(i, len(chunks))
         chunk_items, error = await _extract_chunk_with_llm(chunk, i)
         items += chunk_items
         if error:

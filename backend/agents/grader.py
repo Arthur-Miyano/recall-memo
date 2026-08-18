@@ -43,9 +43,9 @@ class GraderAgent(BaseAgent):
 
     name = "评分"
 
-    async def run(self, question: Question, user_answer: str) -> dict[str, Any]:
-        """主入口：对一条回答输出结构化评分。"""
-        return await self.score(question, user_answer)
+    async def run(self, question: Question, user_answer: str, with_annotation: bool = True) -> dict[str, Any]:
+        """主入口：对一条回答输出结构化评分。with_annotation=False 时不要求 LLM 生成标注版答案。"""
+        return await self.score(question, user_answer, with_annotation=with_annotation)
 
     @staticmethod
     def detect_reciting(user_answer: str, standard_answer: str) -> tuple[float, bool]:
@@ -53,14 +53,35 @@ class GraderAgent(BaseAgent):
         ratio = SequenceMatcher(None, user_answer, standard_answer).ratio()
         return ratio, ratio > RECITE_RATIO_THRESHOLD
 
-    async def score(self, question: Question, user_answer: str) -> dict[str, Any]:
-        """输出结构化评分：各维度得分、总分、是否背诵、遗漏关键点、定性点评。"""
+    async def score(self, question: Question, user_answer: str, with_annotation: bool = True) -> dict[str, Any]:
+        """输出结构化评分：各维度得分、总分、是否背诵、遗漏关键点、定性点评。
+
+        with_annotation=False 时 prompt 不要求 annotated_answer（逐字复制标答很费输出 token），
+        返回的 annotated_answer 为 None——记忆训练即时反馈不展示标注，走这个省 token 路径；
+        面试终局复盘（复盘报告页展示标注）保持 True。
+        """
         ratio, is_reciting = self.detect_reciting(user_answer, question.answer)
 
         naturalness_rule = (
             f"该回答已被判定有背诵痕迹（与标准答案逐字重合率过高），naturalness 必须给 0~{RECITE_NATURALNESS_CAP:.0f} 分。"
             if is_reciting
             else "该回答重合率正常，naturalness 按表达是否自然、口语化程度在 0~100 评分。"
+        )
+        # 标注指令单独成段：不要标注时整段省略（输出 tokens 约为标答全文，是最贵的一段）
+        annotation_rule = (
+            '- annotated_answer：标注版标准答案。把上面的【标准答案】原文逐字复制，仅插入以下两种标记，'
+            "不得增删改任何其他文字、标点或换行：\n"
+            "  · 标准答案中有、但用户回答没覆盖到的要点片段，用 [[omiss]]…[[/omiss]] 包裹；\n"
+            "  · 与用户回答中逻辑错误/混乱相对应的正确论述片段，用 [[logic]]…[[/logic]] 包裹。\n"
+            "  标记必须精确包裹最小相关片段（一个词组或一句话），其余原文逐字不变，标记必须成对闭合。\n"
+            if with_annotation else ""
+        )
+        output_fields = (
+            '{"accuracy": 数字, "logic": 数字, "naturalness": 数字, '
+            '"missed_points": ["..."], "comment": "...", "annotated_answer": "..."}'
+            if with_annotation else
+            '{"accuracy": 数字, "logic": 数字, "naturalness": 数字, '
+            '"missed_points": ["..."], "comment": "..."}'
         )
         user_prompt = (
             f"【面试题】{question.stem}\n\n"
@@ -76,13 +97,8 @@ class GraderAgent(BaseAgent):
             "另外给出：\n"
             '- missed_points：遗漏的关键点列表（字符串数组，无遗漏则为空数组）；\n'
             '- comment：100 字以内的定性点评；\n'
-            "- annotated_answer：标注版标准答案。把上面的【标准答案】原文逐字复制，仅插入以下两种标记，"
-            "不得增删改任何其他文字、标点或换行：\n"
-            "  · 标准答案中有、但用户回答没覆盖到的要点片段，用 [[omiss]]…[[/omiss]] 包裹；\n"
-            "  · 与用户回答中逻辑错误/混乱相对应的正确论述片段，用 [[logic]]…[[/logic]] 包裹。\n"
-            "  标记必须精确包裹最小相关片段（一个词组或一句话），其余原文逐字不变，标记必须成对闭合。\n\n"
-            '输出格式：{"accuracy": 数字, "logic": 数字, "naturalness": 数字, '
-            '"missed_points": ["..."], "comment": "...", "annotated_answer": "..."}'
+            f"{annotation_rule}\n"
+            f'输出格式：{output_fields}'
         )
         messages = [
             {"role": "system", "content": _SCORE_SYSTEM_PROMPT},

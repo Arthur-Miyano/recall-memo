@@ -45,12 +45,14 @@ const INTERVIEW_COUNTS = [3, 4, 5]
 function go(di) {
   if (di === 0) {
     // NO.01 记忆训练：组 0 = 技术栈（keys 与 options 一一对应），组 1 = 题量
+    // fresh 时间戳：每次点击「开始记忆」都开新一轮抽题；切页返回（无新 fresh）则恢复原题
     const groups = data.value.drawers[0].optGroups
     router.push({
       path: '/memorize',
       query: {
         stack: groups[0].keys[optSel.value[0][0]],
         count: MEMORIZE_COUNTS[optSel.value[0][1]],
+        fresh: String(Date.now()),
       },
     })
   } else if (di === 1) {
@@ -62,7 +64,7 @@ function go(di) {
       },
     })
   } else {
-    router.push({ path: '/memorize', query: { mode: 'review' } })
+    router.push({ path: '/memorize', query: { mode: 'review', fresh: String(Date.now()) } })
   }
 }
 </script>

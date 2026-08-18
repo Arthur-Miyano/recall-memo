@@ -280,9 +280,10 @@ class OrchestratorAgent(BaseAgent):
         question = self._current_question(db, session)
 
         # 评分 Agent 评分 与 智能助理写入回答原文 并行（文档 3.2）
+        # with_annotation=False：即时反馈不展示标注版答案，省掉"逐字复制标答"的输出 token
         self._transition(db, session, quiz_state, self.grader.name)
         score, record_id = await asyncio.gather(
-            self.grader.run(question, answer),
+            self.grader.run(question, answer, with_annotation=False),
             self.assistant.run(db, session_id=session.id, question_id=question.id, user_answer=answer),
         )
         # 评分完成后回填分数并聚合 daily_stats

@@ -2,6 +2,8 @@
 // App 骨架
 // 职责：顶部原型导航（router-link 版）+ 路由出口 + 全局水墨螃蟹（含对话面板）
 // 数据流：导航项来自 router 配置的 meta.nav；螃蟹面板状态在 InkCrab 内部自管理
+// 注意：记忆训练/面试答题不进顶部导航（meta.navHide）——只能从首页抽屉进入，
+//       防止误触直达开始答题；路由本身保留
 import { useRoute, useRouter } from 'vue-router'
 import InkCrab from './components/InkCrab.vue'
 import { offline } from './api'
@@ -15,7 +17,7 @@ const router = useRouter()
   <nav class="proto-nav">
     <span class="spacer"></span>
     <a
-      v-for="r in router.getRoutes()"
+      v-for="r in router.getRoutes().filter(r => !r.meta.navHide)"
       :key="r.name"
       :class="{ on: route.name === r.name }"
       @click.prevent="router.push(r.path)"
