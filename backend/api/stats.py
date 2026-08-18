@@ -130,7 +130,7 @@ def stats_llm_usage(days: int = Query(default=30, ge=1, le=90), db: DBSession = 
     rows = db.exec(select(LLMUsage)).all()   # 每 LLM 调用一行，量级小，全量可接受
     since = days_ago_local(days - 1)
 
-    totals = {"cost": 0.0, "requests": 0, "tokens": 0, "unpriced_requests": 0}
+    totals = {"cost": 0.0, "requests": 0, "tokens": 0, "unpriced_requests": 0, "errors": 0}
     by_model: dict[str, dict] = {}
     by_day: dict[date, dict] = {}
     for r in rows:
@@ -140,6 +140,8 @@ def stats_llm_usage(days: int = Query(default=30, ge=1, le=90), db: DBSession = 
         cost = estimate_cost(r.provider, r.model, cache_hit, cache_miss, r.completion_tokens, r.created_at)
         totals["requests"] += 1
         totals["tokens"] += r.total_tokens
+        if getattr(r, "status", "ok") == "error":
+            totals["errors"] += 1
         if cost is None:
             totals["unpriced_requests"] += 1
         else:
@@ -177,6 +179,7 @@ def stats_llm_usage(days: int = Query(default=30, ge=1, le=90), db: DBSession = 
             "requests": totals["requests"],
             "tokens": totals["tokens"],
             "unpriced_requests": totals["unpriced_requests"],
+            "errors": totals["errors"],
         },
         "daily": daily,
         "models": sorted(

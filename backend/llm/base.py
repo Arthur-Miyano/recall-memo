@@ -5,7 +5,7 @@ from typing import Any
 
 import httpx
 
-from .usage import record_usage
+from .usage import record_attempt, record_usage
 
 
 class BaseLLMClient(ABC):
@@ -48,8 +48,13 @@ class BaseLLMClient(ABC):
         if not self.available:
             raise RuntimeError(f"Provider {self.name} 未配置 API Key，不可用")
         payload: dict[str, Any] = {"model": self.model, "messages": messages, **kwargs}
-        resp = await self._get_client().post("/chat/completions", json=payload)
-        resp.raise_for_status()
+        try:
+            resp = await self._get_client().post("/chat/completions", json=payload)
+            resp.raise_for_status()
+        except Exception:
+            # 失败调用也记账：官网对失败请求同样计费（至少输入部分），按输入长度估算落库
+            record_attempt(self.name, self.model, messages)
+            raise
         data = resp.json()
         # token 用量落库（仪表盘"API 消耗"板块）；失败只记日志，不影响主流程
         record_usage(self.name, self.model, data.get("usage"))

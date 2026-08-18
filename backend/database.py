@@ -18,6 +18,7 @@ def init_db() -> None:
     migrate_records_annotated_answer()
     migrate_chat_messages_session_id()
     migrate_llm_usage_cache_columns()
+    migrate_llm_usage_status_columns()
     backfill_retry_queue()
     expire_stale_sessions()
 
@@ -111,6 +112,18 @@ def migrate_llm_usage_cache_columns() -> None:
             conn.execute(text("ALTER TABLE llm_usage ADD COLUMN cache_hit_tokens INTEGER DEFAULT 0"))
         if "cache_miss_tokens" not in cols:
             conn.execute(text("ALTER TABLE llm_usage ADD COLUMN cache_miss_tokens INTEGER DEFAULT 0"))
+
+
+def migrate_llm_usage_status_columns() -> None:
+    """轻量迁移：llm_usage 表补 status/estimated 列（失败调用也落库，token 为输入估算）。"""
+    with engine.begin() as conn:
+        cols = {row[1] for row in conn.execute(text("PRAGMA table_info(llm_usage)"))}
+        if not cols:
+            return  # 全新库：create_all 已含新列
+        if "status" not in cols:
+            conn.execute(text("ALTER TABLE llm_usage ADD COLUMN status TEXT DEFAULT 'ok'"))
+        if "estimated" not in cols:
+            conn.execute(text("ALTER TABLE llm_usage ADD COLUMN estimated INTEGER DEFAULT 0"))
 
 
 def backfill_retry_queue() -> None:

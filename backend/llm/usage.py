@@ -102,3 +102,30 @@ def record_usage(provider: str, model: str, usage: Optional[dict[str, Any]]) -> 
             session.commit()
     except Exception:
         logger.warning("LLM 用量落库失败（不影响主流程）", exc_info=True)
+
+
+def record_attempt(provider: str, model: str, messages: list[dict[str, Any]]) -> None:
+    """失败调用也落库：API 报错拿不到 usage，按输入字符数估算 prompt tokens。
+
+    估算口径：中英混合约 1 token ≈ 1.5 字符（cache 全部按未命中，上限口径）。
+    官网对失败请求同样计费（至少输入部分），故计入用量与花费，保证账面完整。
+    用量统计绝不影响主流程：任何异常只记日志。
+    """
+    try:
+        chars = sum(len(str(m.get("content") or "")) for m in messages)
+        est = max(1, chars * 2 // 3)
+        # 延迟导入：避免 llm 包与 database 模块的循环依赖
+        from database import engine
+        from models import LLMUsage
+        from sqlmodel import Session as DBSession
+
+        with DBSession(engine) as session:
+            session.add(LLMUsage(
+                provider=provider, model=model,
+                prompt_tokens=est, completion_tokens=0, total_tokens=est,
+                cache_hit_tokens=0, cache_miss_tokens=est,
+                status="error", estimated=True,
+            ))
+            session.commit()
+    except Exception:
+        logger.warning("LLM 失败调用落库失败（不影响主流程）", exc_info=True)

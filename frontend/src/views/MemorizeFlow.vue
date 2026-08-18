@@ -26,6 +26,7 @@ const sessionStore = useSessionStore()
 
 // ---- mock 兜底态（后端不可用时展示演示数据） ----
 const useMock = ref(false)
+const loadError = ref('')   // 创建会话失败的业务错误（空题库/LLM 不可用等）：明确提示，不用 mock 冒充
 const quizzing = ref(false)   // 是否已进入考核阶段
 const kwShow = ref(false)     // 关键词提示是否展开
 const fbShow = ref(false)     // 即时反馈是否展示
@@ -122,8 +123,17 @@ onMounted(async () => {
       return { no: `题 ${i + 1} / ${d.questions.length}`, title: q.stem, retry: q.retry, answer: q.answer }
     })
   } catch (e) {
-    console.warn('[memorize] 创建会话失败，回退 mock 演示数据：', e.message)
-    useMock.value = true
+    if (e.isNetwork) {
+      // 后端不可达：回退 mock 演示数据（离线角标由 api 层置位）
+      console.warn('[memorize] 创建会话失败（网络），回退 mock 演示数据：', e.message)
+      useMock.value = true
+    } else {
+      // 业务错误（空题库/LLM 不可用等）：明确提示，不用 mock 冒充真题；
+      // 且不保存快照——下次进入重新尝试创建会话
+      console.warn('[memorize] 创建会话失败：', e.message)
+      loadError.value = e.message
+      return
+    }
   }
   saveSnapshot(fresh)
 })
@@ -268,6 +278,19 @@ async function exportCard() {
 
       <!-- 阶段一：展示题干+答案供记忆（点击卡片单题放大） -->
       <div class="mem-show">
+        <!-- 创建会话失败的业务错误（空题库/LLM 不可用）：明确提示 + 出口 -->
+        <div v-if="loadError" class="paper mem-q">
+          <div class="paper-head">
+            <span class="no">ERROR</span>
+            <h3>无法开始训练</h3>
+          </div>
+          <p class="comment">{{ loadError }}</p>
+          <div class="mem-actions">
+            <button class="btn btn--ghost" @click="router.push('/bank')">去题库看看 →</button>
+            <button class="btn" @click="router.push('/')">返回首页 →</button>
+          </div>
+        </div>
+        <template v-else>
         <div class="paper mem-q mem-click" v-for="(q, i) in questions" :key="q.no" @click="openZoom(i)">
           <div class="paper-head">
             <span class="no">{{ q.no }}</span>
@@ -280,6 +303,7 @@ async function exportCard() {
           <button class="btn" :disabled="!!busy" @click="startQuiz">我记好了，开始考核 →</button>
           <span class="iv-note">// 考核时将打乱顺序，只显示变体题干；点击题目卡片可放大逐题观看</span>
         </div>
+        </template>
       </div>
 
       <!-- 阶段二：打乱考核 + 即时反馈 -->
@@ -289,6 +313,7 @@ async function exportCard() {
         <div class="iv-follow"><span class="tag">{{ quiz.followTag }}</span></div>
         <div style="margin-bottom:16px">
           <button class="btn btn--ghost" style="padding:7px 20px;font-size:12px" @click="toggleKw">提示（关键词）</button>
+          <button class="btn btn--ghost" style="padding:7px 20px;font-size:12px;margin-left:8px" disabled title="语音输入：预留接口，后续迭代开放">语音输入（预留）</button>
           <div class="kw-hint" :class="{ show: kwShow }">
             <span class="tag" v-for="k in quiz.keywords" :key="k">{{ k }}</span>{{ ' ' }}
           </div>

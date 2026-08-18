@@ -210,3 +210,25 @@ class TestStatsApi:
         assert detail["items"] == []
         per_q = client.get("/api/stats/per-question").json()
         assert per_q == {"total": 0, "items": []}
+
+
+class TestSessionsLlmDegradation:
+    def test_llm_down_returns_503(self, client, monkeypatch):
+        """LLM 全部不可用（超时/限流/未配置 Key）：503 + 可读降级提示，不抛裸 500。"""
+        from llm import llm_router
+        from llm.router import LLMProviderUnavailableError
+
+        async def _down(messages, **kwargs):
+            raise LLMProviderUnavailableError("所有 Provider 调用均失败")
+
+        monkeypatch.setattr(llm_router, "chat", _down)
+        _import_questions(client, 3)
+        resp = client.post("/api/sessions", json={"mode": "interview", "count": 3})
+        assert resp.status_code == 503
+        assert "LLM 服务暂不可用" in resp.json()["detail"]
+
+    def test_empty_bank_returns_400_with_guidance(self, client):
+        """空题库：400 + 引导文案（先有题再训练），会话不留孤儿行。"""
+        resp = client.post("/api/sessions", json={"mode": "memorize", "count": 3})
+        assert resp.status_code == 400
+        assert "题库为空" in resp.json()["detail"]

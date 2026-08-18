@@ -97,7 +97,8 @@ def _add_usage(db, model="deepseek-chat", provider="deepseek", days_ago=0,
 class TestLlmUsageApi:
     def test_empty(self, client):
         data = client.get("/api/stats/llm-usage").json()
-        assert data["totals"] == {"cost": 0.0, "requests": 0, "tokens": 0, "unpriced_requests": 0}
+        assert data["totals"] == {"cost": 0.0, "requests": 0, "tokens": 0,
+                                  "unpriced_requests": 0, "errors": 0}
         assert len(data["daily"]) == 30
         assert all(d["requests"] == 0 for d in data["daily"])
         assert data["models"] == []
@@ -131,3 +132,58 @@ class TestLlmUsageApi:
         assert kimi["priced"] is False
         assert kimi["cost"] is None
         assert kimi["tokens"] == 600_000
+
+
+class TestRecordAttempt:
+    def test_failed_call_recorded_with_estimation(self, db):
+        """失败调用：按输入字符数估算 prompt tokens，status=error、estimated=True。"""
+        from llm.usage import record_attempt
+        record_attempt("deepseek", "deepseek-chat", [
+            {"role": "system", "content": "x" * 150},
+            {"role": "user", "content": "y" * 150},
+        ])
+        row = db.query(LLMUsage).one()
+        assert row.status == "error"
+        assert row.estimated is True
+        assert row.prompt_tokens == 200          # 300 字符 × 2/3
+        assert row.completion_tokens == 0
+        assert row.cache_miss_tokens == 200      # 估算全部按未命中（上限口径）
+
+    def test_failed_call_priced_and_counted(self, client, db):
+        """失败调用进入聚合：requests/tokens/cost 计入，errors 单独计数。"""
+        from llm.usage import record_attempt, estimate_cost
+        from datetime import datetime, timezone
+        record_attempt("deepseek", "deepseek-chat", [{"role": "user", "content": "x" * 1500}])
+        data = client.get("/api/stats/llm-usage").json()
+        assert data["totals"]["requests"] == 1
+        assert data["totals"]["errors"] == 1
+        assert data["totals"]["tokens"] == 1000
+        expected = estimate_cost("deepseek", "deepseek-chat", 0, 1000, 0,
+                                 datetime.now(timezone.utc))
+        assert data["totals"]["cost"] == round(expected, 2)
+
+    def test_base_client_records_attempt_on_http_error(self, db, monkeypatch):
+        """BaseLLMClient.chat 请求失败时自动 record_attempt（不吞异常）。"""
+        import pytest
+        from llm.base import BaseLLMClient
+
+        class DummyClient(BaseLLMClient):
+            name = "deepseek"
+            model = "deepseek-chat"
+
+            def _extract_content(self, data):
+                return ""
+
+        client = DummyClient(api_key="sk-test")
+
+        class _FailingTransport:
+            async def post(self, *a, **kw):
+                raise RuntimeError("boom")
+
+        monkeypatch.setattr(client, "_get_client", lambda: _FailingTransport())
+        with pytest.raises(RuntimeError):
+            import asyncio
+            asyncio.run(client.chat([{"role": "user", "content": "你好" * 100}]))
+        rows = db.query(LLMUsage).all()
+        assert len(rows) == 1
+        assert rows[0].status == "error"

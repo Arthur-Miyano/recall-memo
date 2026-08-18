@@ -755,7 +755,7 @@ function onImported() { loadDashboard() }
               <tr v-if="!modalData.usage.models.length"><td colspan="5" class="dim">暂无调用记录</td></tr>
             </tbody>
           </table>
-          <div class="iv-note" style="margin-top:12px">// 花费按后端单价表估算：DeepSeek 分高峰（9:00–12:00、14:00–18:00）与空闲时段，缓存命中价另计；Kimi 为套餐额度只记 token 不计价；实际账单以平台为准</div>
+          <div class="iv-note" style="margin-top:12px">// 花费按后端单价表估算：DeepSeek 分高峰（9:00–12:00、14:00–18:00）与空闲时段，缓存命中价另计；Kimi 为套餐额度只记 token 不计价<template v-if="modalData.usage.totals?.errors">；含 {{ modalData.usage.totals.errors }} 次失败调用（token 按输入长度估算）</template>；实际账单以平台为准</div>
         </template>
       </template>
     </DashboardModal>

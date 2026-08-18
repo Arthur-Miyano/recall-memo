@@ -23,4 +23,6 @@ class LLMUsage(SQLModel, table=True):
     total_tokens: int = Field(default=0, description="总 tokens")
     cache_hit_tokens: int = Field(default=0, description="输入中缓存命中的 tokens（DeepSeek 缓存计价）")
     cache_miss_tokens: int = Field(default=0, description="输入中缓存未命中的 tokens")
+    status: str = Field(default="ok", description="ok=成功；error=调用失败（token 为输入估算，失败也计入账单口径）")
+    estimated: bool = Field(default=False, description="token 是否为本地估算（失败调用拿不到 usage，按字符数估）")
     created_at: datetime = Field(default_factory=_utcnow, description="调用时间（UTC）")

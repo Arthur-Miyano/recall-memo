@@ -21,6 +21,7 @@ const store = useSessionStore()
 
 const TOTAL_SEC = 120            // 每题限时 2:00
 const useMock = ref(false)
+const loadError = ref('')        // 创建面试会话失败的业务错误（空题库/LLM 不可用）：明确提示，不用 mock 冒充
 const sessionId = ref(null)
 const topLeft = ref(iv.topLeft)
 const progressTag = ref(iv.progressTag)
@@ -88,8 +89,15 @@ onMounted(async () => {
     topLeft.value = `INTERVIEW — ${(stack || 'mixed') === 'mixed' ? '混合场' : String(stack).toUpperCase()} ${d.question_count} 题`
     applyQuestion(d.first_question)
   } catch (e) {
-    console.warn('[interview] 创建面试会话失败，回退 mock 演示数据：', e.message)
-    useMock.value = true
+    if (e.isNetwork) {
+      // 后端不可达：回退 mock 演示数据（离线角标由 api 层置位）
+      console.warn('[interview] 创建面试会话失败（网络），回退 mock 演示数据：', e.message)
+      useMock.value = true
+    } else {
+      // 业务错误（空题库/LLM 不可用等）：明确提示，不用 mock 冒充真题
+      console.warn('[interview] 创建面试会话失败：', e.message)
+      loadError.value = e.message
+    }
   }
 })
 onUnmounted(() => clearInterval(timer))
@@ -159,6 +167,18 @@ function next() {
       </div>
       <div class="iv-line" :class="{ over }"><i :style="{ width: lineWidth }"></i></div>
 
+      <!-- 创建会话失败的业务错误（空题库/LLM 不可用）：明确提示 + 出口 -->
+      <template v-if="loadError">
+        <div class="iv-agent">ERROR</div>
+        <h2 class="iv-question" style="font-size:22px">无法开始面试</h2>
+        <p class="iv-note" style="margin:12px 0 22px">{{ loadError }}</p>
+        <div class="iv-actions">
+          <button class="btn btn--ghost" @click="router.push('/bank')">去题库看看 →</button>
+          <button class="btn" @click="router.push('/')">返回首页 →</button>
+        </div>
+      </template>
+
+      <template v-else>
       <div class="iv-agent">面试官 AGENT 提问中</div>
       <h2 class="iv-question">{{ question }}</h2>
       <div class="iv-follow"><span class="tag tag--seal">{{ followTag }}</span></div>
@@ -168,6 +188,7 @@ function next() {
         <div class="iv-actions">
           <button class="btn" :disabled="!!busy" @click="submit">{{ busy || '提交回答' }}</button>
           <button class="btn btn--ghost" :disabled="!!busy" @click="skip">跳过本题</button>
+          <button class="btn btn--ghost" disabled title="语音输入：预留接口，后续迭代开放">语音输入（预留）</button>
           <span class="spacer" style="flex:1"></span>
           <span class="iv-note">{{ iv.note }}</span>
         </div>
@@ -178,6 +199,7 @@ function next() {
         <p>ANSWER LOGGED — 评分将于终局复盘时公布</p>
         <button class="btn" @click="next">{{ lastPayload?.finished ? '查看终局复盘 →' : '下一题 →' }}</button>
       </div>
+      </template>
     </div>
   </section>
 </template>

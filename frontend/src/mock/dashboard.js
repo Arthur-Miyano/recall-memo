@@ -38,7 +38,7 @@ export const dashboard = {
   },
   // API 消耗（LLM 用量）：全量总计 + 近 30 天每日 + 按模型分组
   usage: {
-    totals: { cost: 6.83, requests: 927, tokens: 86925716 },
+    totals: { cost: 6.83, requests: 927, tokens: 86925716, errors: 3 },
     daily: mockUsageDaily(),
     models: [
       { model: 'deepseek-chat', provider: 'deepseek', priced: true, cost: 6.83, requests: 812, tokens: 79255116 },
