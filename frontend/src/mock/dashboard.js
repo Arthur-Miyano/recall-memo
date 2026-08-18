@@ -36,4 +36,23 @@ export const dashboard = {
     // 「从环境变量提取」演示结果
     envPulled: { name: 'DEEPSEEK_API_KEY（环境变量）', masked: 'sk-••••81d7' },
   },
+  // API 消耗（LLM 用量）：全量总计 + 近 30 天每日 + 按模型分组
+  usage: {
+    totals: { cost: 6.83, requests: 927, tokens: 86925716 },
+    daily: mockUsageDaily(),
+    models: [
+      { model: 'deepseek-chat', provider: 'deepseek', cost: 6.83, requests: 927, tokens: 86925716 },
+    ],
+  },
+}
+
+// 近 30 天演示用量：少量几个峰值，其余近零
+function mockUsageDaily() {
+  const costs = [0, .04, 0, .05, .41, .28, 0, .27, .02, .03, 0, 0, 1.28, 1.69, .04, .07, .03, .28, 1.14, .11, 0, .37, .45, .13, .02, .39, 0, 0, .02, .05]
+  return costs.map((cost, i) => {
+    const d = new Date()
+    d.setDate(d.getDate() - (29 - i))
+    const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    return { date, cost, requests: Math.round(cost * 135), tokens: Math.round(cost * 1.27e7) }
+  })
 }

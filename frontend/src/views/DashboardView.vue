@@ -5,6 +5,7 @@
 //   GET /api/stats/overview     —— 各栈正确率、覆盖度
 //   GET /api/stats/daily?days=N —— 月历热力（90 天，前端按月切换）与 7 天趋势、连续打卡
 //   GET /api/bank/overview      —— 知识图谱小卡片概览计数 + 今日建议
+//   GET /api/stats/llm-usage?days=30 —— API 消耗（花费/请求/Tokens 总计 + 每日柱状 + 按模型）
 // 放大视图（点击卡片打开纸张 modal，数据流见 api/bank.js）：
 //   每日记录 → /api/stats/daily-detail?days=90（逐日明细）+ /api/stats/daily?days=90（月历热力，前端按月切换）
 //   趋势     → /api/stats/daily?days=30（成功/失败双色阶梯折线）
@@ -20,7 +21,7 @@ import DashboardModal from '../components/DashboardModal.vue'
 import ImportPanel from '../components/ImportPanel.vue'
 import InkCalendar from '../components/InkCalendar.vue'
 import { dashboard as mockDb } from '../mock/dashboard'
-import { getStatsOverview, getStatsDaily, getBankOverview } from '../api'
+import { getStatsOverview, getStatsDaily, getBankOverview, getLlmUsage } from '../api'
 import {
   getStatsDailyDetail, getStatsPerQuestion, getRetryQueue, postAssistantPlan,
 } from '../api/bank'
@@ -79,8 +80,8 @@ function kgLabel(groupName, idx, count) {
 // 卡片数据加载（首屏 + 录入成功后刷新共用）
 async function loadDashboard() {
   try {
-    const [ov, daily90, daily7, bank] = await Promise.all([
-      getStatsOverview(), getStatsDaily(90), getStatsDaily(7), getBankOverview(),
+    const [ov, daily90, daily7, bank, usage] = await Promise.all([
+      getStatsOverview(), getStatsDaily(90), getStatsDaily(7), getBankOverview(), getLlmUsage(30),
     ])
     // 连续打卡：从今天往前数有答题的天数
     let streak = 0
@@ -106,6 +107,7 @@ async function loadDashboard() {
       })),
       stackOv: buildStackOverview(bank),
       suggestions: buildSuggestions(bank),
+      usage,                              // API 消耗：totals + 30 天 daily + models
       settings: mockDb.settings, // 设置面板自行请求真实接口，这里仅占位
     }
   } catch (e) {
@@ -160,6 +162,29 @@ const gridLines = computed(() => Array.from({ length: db.value.trend.max + 1 }, 
 // 正确率像素柱：pct → 10 格
 function accCells(p) { return Math.round(p / 10) }
 
+// ---- API 消耗（LLM 用量）：柱状图 ----
+// 通用柱条换算：items → 等宽柱（key 为数值字段），柱高 ∝ 数值
+function makeBars(items, key, W, H, pad, bw) {
+  if (!items.length) return { bars: [], max: 0 }
+  const max = Math.max(...items.map(d => d[key]), 1e-9)
+  const slot = (W - pad * 2) / items.length
+  return {
+    max,
+    bars: items.map((d, i) => ({
+      x: pad + i * slot + (slot - bw) / 2,
+      y: H - pad - (d[key] / max) * (H - pad * 2),
+      h: (d[key] / max) * (H - pad * 2),
+      v: d[key], date: d.date, i,
+    })),
+  }
+}
+// 数值格式化：千分位整数 / 大额缩写（1.2k / 3.4M）
+const fmtInt = n => Number(n || 0).toLocaleString('en-US')
+const fmtBig = v => (v >= 1e6 ? (v / 1e6).toFixed(1) + 'M' : v >= 1e3 ? (v / 1e3).toFixed(1) + 'k' : String(Math.round(v * 100) / 100))
+const UW = 560, UH = 120, upad = 28
+// 小卡片：近 30 天花费柱状
+const usageBars = computed(() => makeBars(db.value.usage?.daily || [], 'cost', UW, UH, upad, 10))
+
 /* ==================== 放大视图 ==================== */
 // modalKey：'' | calendar | trend | accuracy | graph | suggest
 const modalKey = ref('')
@@ -173,6 +198,7 @@ const MODAL_META = {
   accuracy: { title: '逐题明细 · 各技术栈正确率', fig: 'FIG.04-C+' },
   graph: { title: '知识图谱 · 全题状态', fig: 'FIG.04-D+' },
   suggest: { title: '今日建议背诵 · 完整清单', fig: 'FIG.04-E+' },
+  usage: { title: 'API 消耗 · LLM 用量（近 30 天）', fig: 'FIG.04-F+' },
 }
 const modalMeta = computed(() => MODAL_META[modalKey.value] || { title: '', fig: '' })
 
@@ -199,6 +225,9 @@ async function openModal(key) {
     } else if (key === 'suggest') {
       const [perQ, retry] = await Promise.all([getStatsPerQuestion(), getRetryQueue()])
       modalData.value = { perQ, retry }
+    } else if (key === 'usage') {
+      usageMetric.value = 'cost'
+      modalData.value = { usage: await getLlmUsage(30) }
     }
   } catch (e) {
     console.warn(`[dashboard] 放大视图数据获取失败（${key}）：`, e.message)
@@ -230,6 +259,22 @@ function stepPath(vals) {
 const okPath = computed(() => stepPath((modalData.value?.daily.items || []).map(d => d.success_count)))
 const failPath = computed(() => stepPath((modalData.value?.daily.items || []).map(d => d.fail_count)))
 const trend30Grid = computed(() => Array.from({ length: trend30Max.value + 1 }, (_, g) => g))
+
+// ---- 放大 · API 消耗：花费/请求/Tokens 三指标切换柱状图 + 按模型明细 ----
+const USAGE_METRICS = [
+  { key: 'cost', label: '消费金额 ¥' },
+  { key: 'requests', label: 'API 请求' },
+  { key: 'tokens', label: 'Tokens' },
+]
+const usageMetric = ref('cost')
+const UW2 = 920, UH2 = 240, upad2 = 30
+const usageBig = computed(() =>
+  makeBars(modalData.value?.usage.daily || [], usageMetric.value, UW2, UH2, upad2, 18)
+)
+// Y 轴刻度标签：cost 带 ¥ 与两位小数，其余按量缩写
+function usageAxisFmt(v) {
+  return usageMetric.value === 'cost' ? `¥${v.toFixed(2)}` : fmtBig(v)
+}
 
 // ---- 放大 · 正确率：逐题明细按技术栈分组排序，未背的排最后 ----
 const STATUS_ORDER = { weak: 0, done: 1, todo: 2 }
@@ -461,6 +506,36 @@ function onImported() { loadDashboard() }
           </ul>
           <span class="zoom-hint">点击放大 ▸</span>
         </div>
+        <!-- API 消耗（LLM 用量）：总计三项 + 近 30 天花费柱状，点击放大看请求/Tokens 与按模型明细 -->
+        <div class="db-panel db-click" @click="openModal('usage')">
+          <h2>API 消耗 <span class="n">FIG.04-F</span></h2>
+          <div class="usage-totals">
+            <div class="ut"><div class="k">消费金额</div><div class="v">¥{{ db.usage.totals.cost.toFixed(2) }}</div></div>
+            <div class="ut"><div class="k">API 请求</div><div class="v">{{ fmtInt(db.usage.totals.requests) }}</div></div>
+            <div class="ut"><div class="k">Tokens</div><div class="v">{{ fmtInt(db.usage.totals.tokens) }}</div></div>
+          </div>
+          <svg class="chart-line" viewBox="0 0 560 120">
+            <!-- 基线 + 顶格虚线 + Y 轴刻度 -->
+            <line :x1="upad" :y1="UH - upad" :x2="UW - upad" :y2="UH - upad" stroke="rgba(25,25,25,.12)" stroke-width="1" />
+            <line :x1="upad" :y1="upad" :x2="UW - upad" :y2="upad" stroke="rgba(25,25,25,.12)" stroke-width="1" stroke-dasharray="2 4" />
+            <text :x="upad - 8" :y="upad + 4" text-anchor="end" font-family="var(--mono)" font-size="9" fill="rgba(25,25,25,.45)">¥{{ usageBars.max.toFixed(2) }}</text>
+            <text :x="upad - 8" :y="UH - upad + 4" text-anchor="end" font-family="var(--mono)" font-size="9" fill="rgba(25,25,25,.45)">0</text>
+            <!-- 花费柱条（墨色，悬停看日期与金额） -->
+            <template v-for="b in usageBars.bars" :key="b.i">
+              <rect v-if="b.h > 0" :x="b.x" :y="b.y" width="10" :height="b.h" fill="var(--ink)">
+                <title>{{ b.date }} · ¥{{ b.v.toFixed(4) }}</title>
+              </rect>
+            </template>
+            <!-- X 轴：每 10 天一个 MM-DD 标签 -->
+            <text
+              v-for="b in usageBars.bars" :key="'x' + b.i"
+              v-show="b.i % 10 === 0 || b.i === usageBars.bars.length - 1"
+              :x="b.x + 5" :y="UH - 8" text-anchor="middle"
+              font-family="var(--mono)" font-size="9" fill="rgba(25,25,25,.45)"
+            >{{ b.date.slice(5) }}</text>
+          </svg>
+          <span class="zoom-hint">点击放大 ▸</span>
+        </div>
         <!-- 录入题库入口 -->
         <div class="db-panel db-click" @click="showImport = true">
           <h2>录入题库 <span class="n">IMPORT</span></h2>
@@ -627,6 +702,60 @@ function onImported() { loadDashboard() }
           <div v-if="planReply" class="dm-plan-reply">
             <span class="who">智能助理 · 复习计划</span>{{ planReply }}
           </div>
+        </template>
+
+        <!-- 放大 · API 消耗：三指标切换柱状图 + 按模型明细 -->
+        <template v-else-if="modalKey === 'usage'">
+          <div class="kg-tabs">
+            <button
+              v-for="t in USAGE_METRICS" :key="t.key"
+              class="kg-tab" :class="{ active: t.key === usageMetric }"
+              @click="usageMetric = t.key"
+            >{{ t.label }}</button>
+          </div>
+          <svg class="chart-line" :viewBox="`0 0 ${UW2} ${UH2}`" style="width:100%;height:auto">
+            <!-- Y 轴三档网格线 + 刻度 -->
+            <template v-for="g in [0, 0.5, 1]" :key="g">
+              <line
+                :x1="upad2" :y1="UH2 - upad2 - g * (UH2 - upad2 * 2)"
+                :x2="UW2 - upad2" :y2="UH2 - upad2 - g * (UH2 - upad2 * 2)"
+                stroke="rgba(25,25,25,.12)" stroke-width="1" :stroke-dasharray="g ? '2 4' : undefined"
+              />
+              <text
+                :x="upad2 - 8" :y="UH2 - upad2 - g * (UH2 - upad2 * 2) + 4"
+                text-anchor="end" font-family="var(--mono)" font-size="9" fill="rgba(25,25,25,.45)"
+              >{{ usageAxisFmt(usageBig.max * g) }}</text>
+            </template>
+            <!-- X 轴：每 5 天一个 MM-DD 标签 -->
+            <text
+              v-for="b in usageBig.bars" :key="'x' + b.i"
+              v-show="b.i % 5 === 0 || b.i === usageBig.bars.length - 1"
+              :x="b.x + 9" :y="UH2 - 8" text-anchor="middle"
+              font-family="var(--mono)" font-size="9" fill="rgba(25,25,25,.45)"
+            >{{ b.date.slice(5) }}</text>
+            <!-- 柱条（墨色，悬停看精确值） -->
+            <template v-for="b in usageBig.bars" :key="b.i">
+              <rect v-if="b.h > 0" :x="b.x" :y="b.y" width="18" :height="b.h" fill="var(--ink)">
+                <title>{{ b.date }} · {{ usageMetric === 'cost' ? '¥' + b.v.toFixed(4) : fmtInt(b.v) }}</title>
+              </rect>
+            </template>
+          </svg>
+          <div v-if="!usageBig.bars.some(b => b.h > 0)" class="dm-empty" style="margin-top:10px">近 30 天暂无 LLM 调用记录</div>
+          <div class="dm-sec-label" style="margin-top:22px">按模型（全量）</div>
+          <table class="dm-table">
+            <thead><tr><th>模型</th><th>Provider</th><th>请求次数</th><th>Tokens</th><th>估算花费</th></tr></thead>
+            <tbody>
+              <tr v-for="m in modalData.usage.models" :key="m.model">
+                <td class="mono">{{ m.model }}</td>
+                <td class="mono dim">{{ m.provider.toUpperCase() }}</td>
+                <td class="mono">{{ fmtInt(m.requests) }}</td>
+                <td class="mono">{{ fmtInt(m.tokens) }}</td>
+                <td class="mono">¥{{ m.cost.toFixed(4) }}</td>
+              </tr>
+              <tr v-if="!modalData.usage.models.length"><td colspan="5" class="dim">暂无调用记录</td></tr>
+            </tbody>
+          </table>
+          <div class="iv-note" style="margin-top:12px">// 花费按后端单价表（元/1M tokens）估算，DeepSeek 缓存命中价更低，实际账单以平台为准</div>
         </template>
       </template>
     </DashboardModal>

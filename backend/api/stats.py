@@ -7,7 +7,8 @@ from sqlmodel import Session as DBSession, select
 
 from agents.base import SCORE_PASS_THRESHOLD
 from api.deps import get_db
-from models import DailyStat, Question, Record, Session
+from llm.usage import estimate_cost
+from models import DailyStat, LLMUsage, Question, Record, Session
 from timeutil import as_local, days_ago_local, local_day_start_utc
 
 # 会话模式 → 中文展示名
@@ -117,6 +118,62 @@ def stats_daily_detail(days: int = Query(default=30, ge=1, le=90), db: DBSession
         for day, recs in sorted(by_day.items(), reverse=True)  # 最近的日期在前
     ]
     return {"days": days, "items": items}
+
+
+@router.get("/llm-usage")
+def stats_llm_usage(days: int = Query(default=30, ge=1, le=90), db: DBSession = Depends(get_db)):
+    """LLM 消耗：全量总计（花费/请求/tokens）+ 近 N 天每日柱状数据 + 按模型分组。
+
+    花费按 llm.usage 的单价表在查询时折算（单价调整后历史自动按新价重估）；
+    日期口径与其他统计接口一致（本地日期）。
+    """
+    rows = db.exec(select(LLMUsage)).all()   # 每 LLM 调用一行，量级小，全量可接受
+    since = days_ago_local(days - 1)
+
+    totals = {"cost": 0.0, "requests": 0, "tokens": 0}
+    by_model: dict[str, dict] = {}
+    by_day: dict[date, dict] = {}
+    for r in rows:
+        cost = estimate_cost(r.model, r.prompt_tokens, r.completion_tokens)
+        totals["cost"] += cost
+        totals["requests"] += 1
+        totals["tokens"] += r.total_tokens
+        m = by_model.setdefault(r.model, {"model": r.model, "provider": r.provider,
+                                          "cost": 0.0, "requests": 0, "tokens": 0})
+        m["cost"] += cost
+        m["requests"] += 1
+        m["tokens"] += r.total_tokens
+        day = as_local(r.created_at).date()
+        if day >= since:
+            d = by_day.setdefault(day, {"cost": 0.0, "requests": 0, "tokens": 0})
+            d["cost"] += cost
+            d["requests"] += 1
+            d["tokens"] += r.total_tokens
+
+    daily = []
+    for i in range(days):
+        day = since + timedelta(days=i)
+        d = by_day.get(day)
+        daily.append({
+            "date": day.isoformat(),
+            "cost": round(d["cost"], 4) if d else 0.0,
+            "requests": d["requests"] if d else 0,
+            "tokens": d["tokens"] if d else 0,
+        })
+
+    return {
+        "days": days,
+        "totals": {
+            "cost": round(totals["cost"], 2),
+            "requests": totals["requests"],
+            "tokens": totals["tokens"],
+        },
+        "daily": daily,
+        "models": sorted(
+            ({**m, "cost": round(m["cost"], 4)} for m in by_model.values()),
+            key=lambda m: -m["cost"],
+        ),
+    }
 
 
 @router.get("/per-question")

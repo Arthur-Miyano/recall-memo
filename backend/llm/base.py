@@ -5,6 +5,8 @@ from typing import Any
 
 import httpx
 
+from .usage import record_usage
+
 
 class BaseLLMClient(ABC):
     """LLM Provider 抽象基类（OpenAI 兼容的 /chat/completions 协议）。"""
@@ -48,7 +50,10 @@ class BaseLLMClient(ABC):
         payload: dict[str, Any] = {"model": self.model, "messages": messages, **kwargs}
         resp = await self._get_client().post("/chat/completions", json=payload)
         resp.raise_for_status()
-        return self._extract_content(resp.json())
+        data = resp.json()
+        # token 用量落库（仪表盘"API 消耗"板块）；失败只记日志，不影响主流程
+        record_usage(self.name, self.model, data.get("usage"))
+        return self._extract_content(data)
 
     @abstractmethod
     def _extract_content(self, data: dict[str, Any]) -> str:

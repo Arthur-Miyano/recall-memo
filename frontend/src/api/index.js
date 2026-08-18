@@ -102,3 +102,4 @@ export const getRetryQueue = () => request('/api/sessions/retry-queue')
 /* ---------- 仪表盘统计 ---------- */
 export const getStatsOverview = () => request('/api/stats/overview')
 export const getStatsDaily = (days = 7) => request(`/api/stats/daily?days=${days}`)
+export const getLlmUsage = (days = 30) => request(`/api/stats/llm-usage?days=${days}`)
