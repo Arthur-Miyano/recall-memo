@@ -172,6 +172,38 @@ class TestBankImportApi:
         assert body["imported"][0]["tech_stack"] == "database"
         assert any("提取真正的面试题" in c for c in fake_llm.calls)
 
+    def test_import_unlabeled_doc_auto_falls_back_to_llm_extract(self, client, fake_llm):
+        """无标签文档（整篇八股文）：规则分段产出大面积缺答案条目时，
+        自动改走 LLM 提取真问题，而不是把每个段落当题去补全。"""
+        # 12 个无标签段落（模拟 md 文档按空行切开后的样子），全部缺答案
+        doc = "\n\n".join(f"## 第 {i} 节\n这是一段没有答案标签的叙述性正文 {i}。" for i in range(12))
+        fake_llm.pdf_items = [{"stem": "文档里真正的面试题？", "answer": "真答案", "tech_stack": "python"}]
+        body = client.post("/api/bank/import", json={"text": doc}).json()
+        assert any("提取真正的面试题" in c for c in fake_llm.calls), "应自动改走 LLM 提取路径"
+        assert len(body["imported"]) == 1
+        assert body["imported"][0]["title"].startswith("文档里真正的面试题")
+
+    def test_import_labeled_text_stays_on_rule_path(self, client, fake_llm):
+        """带「答案：」标签的手写格式：仍走规则解析 + 补全，不触发 LLM 提取路径。"""
+        topics = ["闭包", "装饰器", "生成器", "迭代器", "元类", "垃圾回收",
+                  "多线程", "多进程", "协程", "上下文管理器", "描述符", "反射"]
+        text = "\n\n".join(f"什么是{t}？\n答案：{t}的标准答案。\n技术栈：python" for t in topics)
+        body = client.post("/api/bank/import", json={"text": text}).json()
+        assert not any("提取真正的面试题" in c for c in fake_llm.calls)
+        assert len(body["imported"]) == 12
+
+    def test_import_enrich_batches(self, client, fake_llm):
+        """AI 补全分批：25 题缺技术栈分类时，补全接口应被调用 2 次（每批 20 题）。
+        （缺答案走自动改判路径，故这里用「有答案、缺分类」触发补全）"""
+        topics = ["闭包", "装饰器", "生成器", "迭代器", "元类", "垃圾回收", "多线程", "多进程",
+                  "协程", "上下文管理器", "描述符", "反射", "序列化", "哈希表", "红黑树", "事务",
+                  "索引", "锁机制", "视图", "触发器", "存储过程", "范式", "分库分表", "读写分离", "缓存"]
+        text = "\n\n".join(f"什么是{t}？\n答案：{t}的标准答案，覆盖核心考点。" for t in topics)
+        body = client.post("/api/bank/import", json={"text": text}).json()
+        enrich_calls = [c for c in fake_llm.calls if "补全缺失字段" in c]
+        assert len(enrich_calls) == 2
+        assert len(body["imported"]) == 25
+
 
 # bank/import-jobs：后台录入任务（多文件 + 进度轮询 + latest 重挂）
 class TestImportJobs:

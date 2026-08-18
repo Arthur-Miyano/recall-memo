@@ -171,19 +171,9 @@ async def _run_import(text: str, dedupe: bool, db: DBSession,
         return result
 
     # 1. 解析 + 2. LLM 结构化提取
-    if force_llm_extract:
-        # 强制路径：整段切块走 LLM，不经过规则分段
-        try:
-            extracted, extract_errors = await importer.extract_questions_with_llm(
-                text, progress=lambda i, n: _report("LLM 提取真问题", i, n),
-            )
-            items = extracted
-            for err in extract_errors:
-                result["errors"].append({"title": "（LLM 提取）", "reason": err})
-        except importer.LLMProviderUnavailableError as exc:
-            result["errors"].append({"title": "（LLM 提取）", "reason": f"LLM 不可用：{exc}"})
-            return result
-    else:
+    use_llm_extract = force_llm_extract
+    items: list[dict] = []
+    if not use_llm_extract:
         items, leftovers = importer.parse_text(text)
         if leftovers:
             _report("LLM 结构化提取", 0, 1)
@@ -199,6 +189,23 @@ async def _run_import(text: str, dedupe: bool, db: DBSession,
                 for chunk in leftovers:
                     result["errors"].append({"title": _title_of(chunk), "reason": f"LLM 提取失败：{exc}"})
             _report("LLM 结构化提取", 1, 1)
+        # 条目大面积缺答案：这是无标签文档（整篇八股文 md/txt），规则分段把正文段落
+        # 都当成了题——改走 LLM 提取真问题（与 PDF 同路径），否则补全会爆量且全是噪声
+        missing = sum(1 for it in items if not str(it.get("answer") or "").strip())
+        if len(items) >= 10 and missing / len(items) > 0.5:
+            use_llm_extract = True
+    if use_llm_extract:
+        # 强制路径：整段切块走 LLM，不经过规则分段
+        try:
+            extracted, extract_errors = await importer.extract_questions_with_llm(
+                text, progress=lambda i, n: _report("LLM 提取真问题", i, n),
+            )
+            items = extracted
+            for err in extract_errors:
+                result["errors"].append({"title": "（LLM 提取）", "reason": err})
+        except importer.LLMProviderUnavailableError as exc:
+            result["errors"].append({"title": "（LLM 提取）", "reason": f"LLM 不可用：{exc}"})
+            return result
 
     # 3. 规整字段（技术栈归一化），丢掉连题干都没有的
     valid: list[dict] = []
@@ -215,15 +222,15 @@ async def _run_import(text: str, dedupe: bool, db: DBSession,
     if max_questions is not None and max_questions >= 0:
         valid = valid[:max_questions]
 
-    # 4. LLM 批量补全缺 answer / tech_stack 的题
-    _report("AI 补全缺字段", 0, 1)
+    # 4. LLM 批量补全缺 answer / tech_stack 的题（分批调用，进度按批回报）
     try:
-        enrich_marks = await importer.llm_enrich(valid)
+        enrich_marks = await importer.llm_enrich(
+            valid, progress=lambda i, n: _report("AI 补全缺字段", i, n),
+        )
     except importer.LLMProviderUnavailableError:
         enrich_marks = [{"fields": []} for _ in valid]  # 降级：不补全，后面按缺字段进 errors
     except ValueError:
         enrich_marks = [{"fields": []} for _ in valid]
-    _report("AI 补全缺字段", 1, 1)
 
     # 5. 去重 + 入库
     existing_stems = [q.stem for q in db.exec(select(Question)).all()]

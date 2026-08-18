@@ -215,9 +215,17 @@ async def llm_extract(chunks: list[str]) -> list[dict[str, Any]]:
     return items
 
 
-async def llm_enrich(items: list[dict[str, Any]]) -> list[dict[str, list[str]]]:
+# LLM 补全的单批规模：一次塞太多题会把 prompt 撑爆（大文档导入动辄上千题），分批调用
+_ENRICH_BATCH = 20
+
+
+async def llm_enrich(
+    items: list[dict[str, Any]],
+    progress: Optional[Any] = None,
+) -> list[dict[str, list[str]]]:
     """LLM 批量补全：为缺 answer 或缺 tech_stack 的条目生成标准答案与分类。
 
+    每 _ENRICH_BATCH 题一次调用，progress 为可选回调 progress(已完成批数, 总批数)。
     返回与 items 等长的列表，每项是该题被 AI 补全的字段名列表（可能为空）。
     调用失败抛 LLMProviderUnavailableError，由调用方降级处理。
     """
@@ -227,57 +235,63 @@ async def llm_enrich(items: list[dict[str, Any]]) -> list[dict[str, list[str]]]:
     if not need:
         return enriched
 
-    payload = []
-    for i in need:
-        it = items[i]
-        payload.append({
-            "index": len(payload),
-            "stem": it["stem"],
-            "answer": it.get("answer") or "",
-            "tech_stack": it.get("tech_stack") or "",
-            "knowledge_point": it.get("knowledge_point") or "",
-        })
-    messages = [
-        {"role": "system", "content": _ENRICH_SYSTEM},
-        {"role": "user", "content": (
-            "下面是若干面试题（JSON 数组），请为每题补全缺失字段：\n"
-            "- answer 为空时：生成标准答案，150~350 字，条理清晰，覆盖核心考点；\n"
-            "- tech_stack 为空时：按内容归入 python / agent / vue3 / database 之一；\n"
-            "- knowledge_point 为空时：给一个知识点短语（如 装饰器、GIL、响应式原理）；\n"
-            "- 另给出 keywords：3~5 个关键词数组，以及 difficulty：basic / medium / hard。\n"
-            "已有字段保持原样不要改写。输出 JSON 数组，每个元素带原 index 与全部字段。\n\n"
-            f"{json.dumps(payload, ensure_ascii=False)}\n\n只输出 JSON 数组本身。"
-        )},
-    ]
-    _, raw = await llm_router.chat(messages, temperature=0.3)
-    for d in _extract_json_array(raw):
-        try:
-            src = need[int(d.get("index", -1))]
-        except (ValueError, IndexError):
-            continue
-        it = items[src]
-        fields: list[str] = []
-        if not it.get("answer") and str(d.get("answer") or "").strip():
-            it["answer"] = str(d["answer"]).strip()
-            fields.append("answer")
-        if not normalize_stack(it.get("tech_stack")):
-            stack = normalize_stack(str(d.get("tech_stack") or ""))
-            if stack:
-                it["tech_stack"] = stack
-                fields.append("tech_stack")
-        if not it.get("knowledge_point") and str(d.get("knowledge_point") or "").strip():
-            it["knowledge_point"] = str(d["knowledge_point"]).strip()
-            fields.append("knowledge_point")
-        # keywords / difficulty 只在 LLM 给了且本地没有时采纳（本地从不预填，故给了就采纳）
-        keywords = d.get("keywords")
-        if isinstance(keywords, list) and keywords:
-            it["keywords"] = [str(k) for k in keywords][:6]
-            fields.append("keywords")
-        difficulty = str(d.get("difficulty") or "").strip()
-        if difficulty in ("basic", "medium", "hard"):
-            it["difficulty"] = difficulty
-            fields.append("difficulty")
-        enriched[src]["fields"] = fields
+    batches = [need[i:i + _ENRICH_BATCH] for i in range(0, len(need), _ENRICH_BATCH)]
+    for batch_no, batch in enumerate(batches, start=1):
+        if progress:
+            progress(batch_no - 1, len(batches))
+        payload = []
+        for i in batch:
+            it = items[i]
+            payload.append({
+                "index": len(payload),
+                "stem": it["stem"],
+                "answer": it.get("answer") or "",
+                "tech_stack": it.get("tech_stack") or "",
+                "knowledge_point": it.get("knowledge_point") or "",
+            })
+        messages = [
+            {"role": "system", "content": _ENRICH_SYSTEM},
+            {"role": "user", "content": (
+                "下面是若干面试题（JSON 数组），请为每题补全缺失字段：\n"
+                "- answer 为空时：生成标准答案，150~350 字，条理清晰，覆盖核心考点；\n"
+                "- tech_stack 为空时：按内容归入 python / agent / vue3 / database 之一；\n"
+                "- knowledge_point 为空时：给一个知识点短语（如 装饰器、GIL、响应式原理）；\n"
+                "- 另给出 keywords：3~5 个关键词数组，以及 difficulty：basic / medium / hard。\n"
+                "已有字段保持原样不要改写。输出 JSON 数组，每个元素带原 index 与全部字段。\n\n"
+                f"{json.dumps(payload, ensure_ascii=False)}\n\n只输出 JSON 数组本身。"
+            )},
+        ]
+        _, raw = await llm_router.chat(messages, temperature=0.3)
+        for d in _extract_json_array(raw):
+            try:
+                src = batch[int(d.get("index", -1))]
+            except (ValueError, IndexError):
+                continue
+            it = items[src]
+            fields: list[str] = []
+            if not it.get("answer") and str(d.get("answer") or "").strip():
+                it["answer"] = str(d["answer"]).strip()
+                fields.append("answer")
+            if not normalize_stack(it.get("tech_stack")):
+                stack = normalize_stack(str(d.get("tech_stack") or ""))
+                if stack:
+                    it["tech_stack"] = stack
+                    fields.append("tech_stack")
+            if not it.get("knowledge_point") and str(d.get("knowledge_point") or "").strip():
+                it["knowledge_point"] = str(d["knowledge_point"]).strip()
+                fields.append("knowledge_point")
+            # keywords / difficulty 只在 LLM 给了且本地没有时采纳（本地从不预填，故给了就采纳）
+            keywords = d.get("keywords")
+            if isinstance(keywords, list) and keywords:
+                it["keywords"] = [str(k) for k in keywords][:6]
+                fields.append("keywords")
+            difficulty = str(d.get("difficulty") or "").strip()
+            if difficulty in ("basic", "medium", "hard"):
+                it["difficulty"] = difficulty
+                fields.append("difficulty")
+            enriched[src]["fields"] = fields
+    if progress:
+        progress(len(batches), len(batches))
     return enriched
 
 
