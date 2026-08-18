@@ -17,6 +17,7 @@ def init_db() -> None:
     ensure_indexes()
     migrate_records_annotated_answer()
     migrate_chat_messages_session_id()
+    migrate_llm_usage_cache_columns()
     backfill_retry_queue()
     expire_stale_sessions()
 
@@ -98,6 +99,18 @@ def migrate_chat_messages_session_id() -> None:
                 text("UPDATE chat_messages SET session_id = :sid WHERE session_id IS NULL"),
                 {"sid": cur.lastrowid},
             )
+
+
+def migrate_llm_usage_cache_columns() -> None:
+    """轻量迁移：llm_usage 表补缓存命中/未命中列（DeepSeek 缓存命中价不同，分开计价）。"""
+    with engine.begin() as conn:
+        cols = {row[1] for row in conn.execute(text("PRAGMA table_info(llm_usage)"))}
+        if not cols:
+            return  # 全新库：create_all 已含新列
+        if "cache_hit_tokens" not in cols:
+            conn.execute(text("ALTER TABLE llm_usage ADD COLUMN cache_hit_tokens INTEGER DEFAULT 0"))
+        if "cache_miss_tokens" not in cols:
+            conn.execute(text("ALTER TABLE llm_usage ADD COLUMN cache_miss_tokens INTEGER DEFAULT 0"))
 
 
 def backfill_retry_queue() -> None:

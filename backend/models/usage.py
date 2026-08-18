@@ -21,4 +21,6 @@ class LLMUsage(SQLModel, table=True):
     prompt_tokens: int = Field(default=0, description="输入 tokens")
     completion_tokens: int = Field(default=0, description="输出 tokens")
     total_tokens: int = Field(default=0, description="总 tokens")
+    cache_hit_tokens: int = Field(default=0, description="输入中缓存命中的 tokens（DeepSeek 缓存计价）")
+    cache_miss_tokens: int = Field(default=0, description="输入中缓存未命中的 tokens")
     created_at: datetime = Field(default_factory=_utcnow, description="调用时间（UTC）")

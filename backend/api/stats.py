@@ -130,23 +130,32 @@ def stats_llm_usage(days: int = Query(default=30, ge=1, le=90), db: DBSession = 
     rows = db.exec(select(LLMUsage)).all()   # 每 LLM 调用一行，量级小，全量可接受
     since = days_ago_local(days - 1)
 
-    totals = {"cost": 0.0, "requests": 0, "tokens": 0}
+    totals = {"cost": 0.0, "requests": 0, "tokens": 0, "unpriced_requests": 0}
     by_model: dict[str, dict] = {}
     by_day: dict[date, dict] = {}
     for r in rows:
-        cost = estimate_cost(r.model, r.prompt_tokens, r.completion_tokens)
-        totals["cost"] += cost
+        # 缓存列是后补的：老数据 miss 为 0 时回退为「全部按未命中」（上限口径）
+        cache_hit = r.cache_hit_tokens or 0
+        cache_miss = r.cache_miss_tokens or max(0, r.prompt_tokens - cache_hit)
+        cost = estimate_cost(r.provider, r.model, cache_hit, cache_miss, r.completion_tokens, r.created_at)
         totals["requests"] += 1
         totals["tokens"] += r.total_tokens
+        if cost is None:
+            totals["unpriced_requests"] += 1
+        else:
+            totals["cost"] += cost
         m = by_model.setdefault(r.model, {"model": r.model, "provider": r.provider,
+                                          "priced": cost is not None,
                                           "cost": 0.0, "requests": 0, "tokens": 0})
-        m["cost"] += cost
         m["requests"] += 1
         m["tokens"] += r.total_tokens
+        if cost is not None:
+            m["cost"] += cost
         day = as_local(r.created_at).date()
         if day >= since:
             d = by_day.setdefault(day, {"cost": 0.0, "requests": 0, "tokens": 0})
-            d["cost"] += cost
+            if cost is not None:
+                d["cost"] += cost
             d["requests"] += 1
             d["tokens"] += r.total_tokens
 
@@ -167,11 +176,12 @@ def stats_llm_usage(days: int = Query(default=30, ge=1, le=90), db: DBSession = 
             "cost": round(totals["cost"], 2),
             "requests": totals["requests"],
             "tokens": totals["tokens"],
+            "unpriced_requests": totals["unpriced_requests"],
         },
         "daily": daily,
         "models": sorted(
-            ({**m, "cost": round(m["cost"], 4)} for m in by_model.values()),
-            key=lambda m: -m["cost"],
+            ({**m, "cost": round(m["cost"], 4) if m["priced"] else None} for m in by_model.values()),
+            key=lambda m: -(m["cost"] or 0),
         ),
     }
 

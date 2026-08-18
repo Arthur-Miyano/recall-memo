@@ -41,7 +41,8 @@ export const dashboard = {
     totals: { cost: 6.83, requests: 927, tokens: 86925716 },
     daily: mockUsageDaily(),
     models: [
-      { model: 'deepseek-chat', provider: 'deepseek', cost: 6.83, requests: 927, tokens: 86925716 },
+      { model: 'deepseek-chat', provider: 'deepseek', priced: true, cost: 6.83, requests: 812, tokens: 79255116 },
+      { model: 'kimi-k3', provider: 'kimi', priced: false, cost: null, requests: 115, tokens: 7770600 },
     ],
   },
 }
