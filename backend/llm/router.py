@@ -38,12 +38,18 @@ class LLMRouter:
 
     @staticmethod
     def _build_clients() -> dict[str, BaseLLMClient]:
-        """按当前 settings 实例化全部 Provider 客户端（llm_model 非空时覆盖默认模型名）。"""
+        """按当前 settings 实例化全部 Provider 客户端。
+
+        llm_model 只覆盖优先级第一的默认 Provider：模型名是 Provider 私有的，
+        一刀切覆盖会把 deepseek 的模型名原样发给 Kimi 导致 400。
+        """
         clients: dict[str, BaseLLMClient] = {}
+        priority = settings.provider_priority
+        default_provider = priority[0] if priority else None
         for name, cls in PROVIDER_REGISTRY.items():
             api_key = getattr(settings, PROVIDER_KEY_ATTR.get(name, ""), "")
             client = cls(api_key=api_key, timeout=settings.llm_timeout)
-            if settings.llm_model:
+            if settings.llm_model and name == default_provider:
                 client.model = settings.llm_model
             clients[name] = client
         return clients

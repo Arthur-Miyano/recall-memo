@@ -24,7 +24,8 @@ class Settings(BaseSettings):
     # Provider 优先级，逗号分隔，按顺序尝试
     llm_provider_priority: str = "deepseek,kimi"
 
-    # 模型名覆盖：为空则用各 Provider 的默认模型（设置面板可改，写入 .env 的 LLM_MODEL）
+    # 模型名覆盖：仅对优先级第一的默认 Provider 生效；为空则用各 Provider 的默认模型
+    #（设置面板可改，写入 .env 的 LLM_MODEL）
     llm_model: str = ""
 
     # 数据库文件路径（默认放在项目根目录 data/ 下）

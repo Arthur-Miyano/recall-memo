@@ -53,8 +53,8 @@ if DIST_DIR.is_dir():
         # 未匹配的 /api 路径仍返回 404，不回退成页面
         if full_path.startswith("api/") or full_path == "api":
             raise HTTPException(status_code=404, detail="Not Found")
-        # 静态文件原样返回；其余路径（前端路由）统一回退 index.html
-        candidate = DIST_DIR / full_path
-        if full_path and candidate.is_file():
+        # 静态文件原样返回；路径必须解析后仍落在 dist 内（防 ../ 穿越读到 .env 等文件）
+        candidate = (DIST_DIR / full_path).resolve()
+        if full_path and candidate.is_relative_to(DIST_DIR) and candidate.is_file():
             return FileResponse(candidate)
         return FileResponse(DIST_DIR / "index.html")

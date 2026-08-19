@@ -114,3 +114,26 @@ class TestLlmSettingsPost:
         client.post("/api/settings/llm", json={"provider": "deepseek", "model": "m1"})
         content = isolated_settings.read_text(encoding="utf-8")
         assert "DEEPSEEK_API_KEY=sk-olddeepseekkey123456" in content
+
+
+class TestRouterModelOverride:
+    """llm_model 只覆盖优先级第一的默认 Provider（模型名是 Provider 私有的）。"""
+
+    def test_override_hits_default_provider_only(self, monkeypatch):
+        from llm.router import LLMRouter
+
+        monkeypatch.setattr(settings, "llm_model", "deepseek-v4-flash")
+        monkeypatch.setattr(settings, "llm_provider_priority", "deepseek,kimi")
+        clients = LLMRouter._build_clients()
+        assert clients["deepseek"].model == "deepseek-v4-flash"
+        assert clients["kimi"].model != "deepseek-v4-flash"
+
+    def test_override_follows_priority_order(self, monkeypatch):
+        """默认 Provider 换成 kimi 时，覆盖跟着优先级走。"""
+        from llm.router import LLMRouter
+
+        monkeypatch.setattr(settings, "llm_model", "kimi-k3")
+        monkeypatch.setattr(settings, "llm_provider_priority", "kimi,deepseek")
+        clients = LLMRouter._build_clients()
+        assert clients["kimi"].model == "kimi-k3"
+        assert clients["deepseek"].model != "kimi-k3"

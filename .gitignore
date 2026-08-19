@@ -5,7 +5,9 @@ __pycache__/
 node_modules/
 dist/
 *.db
+*.db.bak*
 *.sqlite3
+data/backup*/
 .DS_Store
 .tmp/
 .pytest-tmp/
