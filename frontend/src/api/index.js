@@ -64,6 +64,8 @@ export const deleteBankQuestion = (id) =>
 export const getLlmSettings = () => request('/api/settings/llm')
 export const postLlmSettings = (payload) =>
   request('/api/settings/llm', { method: 'POST', body: payload })
+// 数据备份与迁移：导出走浏览器直接下载（a 标签 href），导入走 multipart 上传
+export const importDatabase = (formData) => requestForm('/api/settings/import-db', formData)
 export const assistantChat = (payload) =>
   request('/api/assistant/chat', { method: 'POST', body: payload })
 export const getAssistantHistory = (limit = 50, sessionId = null) =>

@@ -7,7 +7,7 @@
 // 注意：密钥红线——仅写入本机 .env，接口只回掩码，不上传不外泄
 import { ref, computed, onMounted } from 'vue'
 import { dashboard } from '../mock/dashboard'
-import { getLlmSettings, postLlmSettings } from '../api'
+import { getLlmSettings, postLlmSettings, importDatabase } from '../api'
 
 const s = dashboard.settings
 // Provider 展示名 ↔ 后端 key（智谱/豆包未接入，置灰）
@@ -85,6 +85,33 @@ async function save() {
     saving.value = false
   }
 }
+
+/* ---------- 数据备份与迁移 ---------- */
+const fileInput = ref(null)
+const importFile = ref(null)
+const importing = ref(false)
+const importResult = ref(null)
+
+function onPick(e) {
+  importFile.value = e.target.files[0] || null
+  importResult.value = null
+}
+
+// 导入旧环境的 .db 备份：后端自动备份当前数据后幂等合并，重复导入不产生重复数据
+async function doImport() {
+  if (!importFile.value) return
+  importing.value = true
+  try {
+    const form = new FormData()
+    form.append('file', importFile.value)
+    importResult.value = await importDatabase(form)
+  } catch (e) {
+    console.warn('[settings] 导入失败：', e.message)
+    alert('导入失败：' + e.message)
+  } finally {
+    importing.value = false
+  }
+}
 </script>
 
 <template>
@@ -127,6 +154,33 @@ async function save() {
       <span class="seal">// 红线：KEY 不上传、不外泄</span><br>
       // 仅写入本机 .env；接口只回掩码（sk-••••81d7）；不入日志、不进 localStorage<br>
       // 唯一外发路径：后端 → 所选 PROVIDER 官方 API
+    </div>
+  </div>
+
+  <div class="db-panel" id="datamove-panel" style="margin-top:24px">
+    <h2>数据备份与迁移 <span class="n">FIG.04-G</span></h2>
+    <div class="set-row">
+      <span class="lbl">导出</span>
+      <a class="btn btn--ghost" style="padding:7px 18px;font-size:12px;text-decoration:none" href="/api/settings/export" download>导出数据</a>
+      <span class="key-status">下载完整数据文件（题库 + 背诵记录 + 笔记）</span>
+    </div>
+    <div class="set-row">
+      <span class="lbl">导入</span>
+      <input ref="fileInput" type="file" accept=".db" style="display:none" @change="onPick">
+      <button class="btn btn--ghost" style="padding:7px 18px;font-size:12px" @click="fileInput.click()">选择备份文件</button>
+      <span class="key-status" v-if="importFile">{{ importFile.name }}</span>
+      <span style="flex:1"></span>
+      <button class="btn" style="padding:7px 18px;font-size:12px" :disabled="!importFile || importing" @click="doImport">{{ importing ? '导入中…' : '确认导入' }}</button>
+    </div>
+    <div class="set-note" v-if="importResult">
+      <span class="seal">// 合并完成</span><br>
+      <template v-for="(t, name) in importResult.tables" :key="name">// {{ name }}：导入 {{ t.imported }}，跳过 {{ t.skipped }}<br></template>
+      <template v-if="importResult.backup">// 导入前备份：{{ importResult.backup }}</template>
+    </div>
+    <div class="set-note">
+      <span class="seal">// 换新电脑 / 新版本时用</span><br>
+      // 旧环境导出 → 新环境导入，题库和背诵记录全部带过来<br>
+      // 导入前自动备份当前数据；同一份文件重复导入不会产生重复数据
     </div>
   </div>
 </template>

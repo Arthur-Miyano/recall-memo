@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from api import assistant, bank, health, home, llm, notes, sessions, settings, stats
+from api import assistant, bank, datamove, health, home, llm, notes, sessions, settings, stats
 from database import init_db
 
 
@@ -37,6 +37,7 @@ app.include_router(stats.router, prefix="/api")
 app.include_router(home.router, prefix="/api")
 app.include_router(bank.router, prefix="/api")
 app.include_router(settings.router, prefix="/api")
+app.include_router(datamove.router, prefix="/api")
 app.include_router(assistant.router, prefix="/api")
 app.include_router(notes.router, prefix="/api")
 
