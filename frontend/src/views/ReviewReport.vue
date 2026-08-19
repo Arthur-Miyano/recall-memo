@@ -29,7 +29,15 @@ const papers = ref(rv.papers)
 const poses = reactive(rv.papers.map(() => null))
 const draggingIdx = ref(-1)
 
-const STACK_LABEL = { python: 'PYTHON', agent: 'AGENT', vue3: 'VUE 3', mixed: '混合' }
+// 21 个 canonical 技术栈 key 的显示名（与后端 STACK_DISPLAY 一致，沿用本页大写风格）；
+// 自由命名栈走 || String(tech_stack).toUpperCase() 兜底原样大写显示
+const STACK_LABEL = {
+  python: 'PYTHON', java: 'JAVA', go: 'GO', c: 'C', cpp: 'C++', csharp: 'C#', php: 'PHP',
+  javascript: 'JAVASCRIPT', vue3: 'VUE 3', react: 'REACT', database: 'DATABASE',
+  network: '计算机网络', os: '操作系统', algorithm: '算法', design_pattern: '设计模式',
+  distributed: '分布式', linux: 'LINUX', devops: 'DEVOPS', agent: 'AGENT', hr: 'HR',
+  other: '其他', mixed: '混合',
+}
 
 function shortStem(s) {
   const t = (s || '').trim()

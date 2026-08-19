@@ -19,7 +19,7 @@ class Question(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     stem: str = Field(description="标准题干")
     answer: str = Field(description="标准答案")
-    tech_stack: str = Field(index=True, description="技术栈：python / agent / vue3 / database")
+    tech_stack: str = Field(index=True, description="技术栈：常见分类见 importer.ALLOWED_STACKS；也允许 LLM 自命名的自由分类；未识别兜底 other")
     difficulty: str = Field(default="medium", index=True, description="难度：basic / medium / hard")
     keywords: list[str] = Field(default_factory=list, sa_column=Column(JSON), description="关键词列表")
     tags: list[str] = Field(default_factory=list, sa_column=Column(JSON), description="标签列表")

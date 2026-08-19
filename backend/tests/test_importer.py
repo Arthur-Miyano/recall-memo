@@ -2,12 +2,14 @@
 """importer 覆盖：
 
 - stem_similarity：相同 1.0 / 空串 0.0 / 完全不同低于阈值 / 微调字符越过阈值边界；
-- normalize_stack：别名映射与白名单；
+- normalize_stack：别名映射、白名单精确命中、自由命名 slug 保留、空输入 None；
 - parse_text：标签行（答案：/技术栈：/知识点：）、缺字段、--- 与空行分隔多题、
   JSON 输入、坏 JSON 落入 leftovers；
 - clean_pdf_text：控制符 / 页码行 / 重复页眉清除，问句不被误删；
 - _split_for_llm：按段落切块不切段落、超长段落硬切（优先换行处下刀）；
-- llm_extract / llm_enrich / extract_questions_with_llm：走 FakeLLM 的三条 LLM 路径。
+- llm_extract / llm_enrich / extract_questions_with_llm：走 FakeLLM 的三条 LLM 路径；
+- 入库兜底（接口级）：go 题落 go 组；自由命名的栈（rust）原样保留；
+  LLM 也分类不出时才兜底 other 而非 python。
 """
 import pytest
 
@@ -63,16 +65,45 @@ class TestStemSimilarity:
 class TestNormalizeStack:
     @pytest.mark.parametrize("raw,expected", [
         ("Python", "python"), ("py", "python"), ("后端", "python"),
+        ("Java", "java"), ("JAVA", "java"),
+        ("go", "go"), ("Go", "go"), ("golang", "go"),
+        ("c", "c"), ("c语言", "c"),
+        ("C++", "cpp"), ("cxx", "cpp"),
+        ("C#", "csharp"), ("c#", "csharp"),
+        ("PHP", "php"),
+        ("js", "javascript"), ("TS", "javascript"), ("node", "javascript"), ("NodeJS", "javascript"),
         ("Vue", "vue3"), ("VUE3", "vue3"), ("前端", "vue3"),
-        ("大模型", "agent"), ("LLM", "agent"),
-        ("MySQL", "database"), ("数据库", "database"),
+        ("React", "react"),
+        ("MySQL", "database"), ("Redis", "database"), ("MongoDB", "database"), ("数据库", "database"),
+        ("计网", "network"), ("计算机网络", "network"), ("TCP", "network"),
+        ("操作系统", "os"), ("os", "os"),
+        ("算法", "algorithm"), ("数据结构", "algorithm"), ("LeetCode", "algorithm"),
+        ("设计模式", "design_pattern"),
+        ("分布式", "distributed"), ("微服务", "distributed"), ("Kafka", "distributed"),
+        ("消息队列", "distributed"), ("系统设计", "distributed"),
+        ("Linux", "linux"), ("运维", "linux"),
+        ("Docker", "devops"), ("K8s", "devops"), ("Nginx", "devops"),
+        ("大模型", "agent"), ("LLM", "agent"), ("RAG", "agent"),
+        ("软技能", "hr"), ("项目经验", "hr"), ("HR", "hr"),
     ])
     def test_aliases(self, raw, expected):
         assert normalize_stack(raw) == expected
 
-    @pytest.mark.parametrize("raw", [None, "", "  ", "golang", "Java"])
-    def test_unrecognized_returns_none(self, raw):
+    @pytest.mark.parametrize("raw", [None, "", "  "])
+    def test_empty_returns_none(self, raw):
         assert normalize_stack(raw) is None
+
+    @pytest.mark.parametrize("raw,expected", [
+        ("rust", "rust"),  # 白名单外的自由命名：清洗为小写 slug 原样保留
+        ("WebAssembly", "webassembly"),
+        ("  Rust  ", "rust"),
+    ])
+    def test_free_named_stack_preserved(self, raw, expected):
+        assert normalize_stack(raw) == expected
+
+    def test_unslugable_returns_none(self):
+        """非空但清洗后为空（纯中文未收别名/纯符号）：返回 None 交给 LLM 分类。"""
+        assert normalize_stack("！！！") is None
 
 
 # ---------------------------------------------------------------------------
@@ -331,3 +362,59 @@ class TestLlmPaths:
         items, error = await importer._extract_chunk_with_llm("原文", 2)
         assert items == []
         assert error is not None and "第 2 块" in error
+
+
+# ---------------------------------------------------------------------------
+# 入库兜底（接口级）
+# ---------------------------------------------------------------------------
+
+class TestImportStackFallback:
+    def test_go_question_lands_in_go(self, client, fake_llm):
+        """Go 题不再被冤枉进 python：LLM 补全给 golang，归一化后落 go。"""
+        fake_llm.enrich_items = [
+            {"index": 0, "answer": "（假补全答案）Go 的调度器是 GMP 模型。", "tech_stack": "golang",
+             "knowledge_point": "GMP", "keywords": ["GMP"], "difficulty": "medium"},
+        ]
+        resp = client.post("/api/bank/import", json={
+            "text": "Go 的 goroutine 是如何被调度的？",
+            "dedupe": False,
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert [i["tech_stack"] for i in data["imported"]] == ["go"]
+
+    def test_free_named_stack_preserved_on_import(self, client, fake_llm):
+        """白名单外的自由命名栈（rust）入库时原样保留，不再被丢弃或兜底 other。"""
+        fake_llm.enrich_items = [
+            {"index": 0, "answer": "（假补全答案）所有权是 Rust 的内存管理机制。",
+             "tech_stack": "", "knowledge_point": "", "keywords": [], "difficulty": "medium"},
+        ]
+        resp = client.post("/api/bank/import", json={
+            "text": "什么是 Rust 的所有权机制？\n技术栈：rust",
+            "dedupe": False,
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert [i["tech_stack"] for i in data["imported"]] == ["rust"]
+        # 总览里出现在 rust 组，自由命名栈没有显示名映射时原样显示
+        overview = client.get("/api/bank/overview").json()
+        assert overview["stacks"][0]["key"] == "rust"
+        assert overview["stacks"][0]["name"] == "rust"
+
+    def test_unknown_stack_falls_back_to_other_not_python(self, client, fake_llm):
+        """LLM 也分类不出（tech_stack 留空）时兜底 other，而不是静默归 python。"""
+        fake_llm.enrich_items = [
+            {"index": 0, "answer": "（假补全答案）所有权是 Rust 的内存管理机制。",
+             "tech_stack": "", "knowledge_point": "", "keywords": [], "difficulty": "medium"},
+        ]
+        resp = client.post("/api/bank/import", json={
+            "text": "什么是 Rust 的所有权机制？",
+            "dedupe": False,
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert [i["tech_stack"] for i in data["imported"]] == ["other"]
+        # 总览里出现在「其他」组，且展示名来自 STACK_DISPLAY
+        overview = client.get("/api/bank/overview").json()
+        assert overview["stacks"][0]["key"] == "other"
+        assert overview["stacks"][0]["name"] == "其他"

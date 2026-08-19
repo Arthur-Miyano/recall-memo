@@ -14,9 +14,12 @@ export const homeSummary = {
         { k: '新题优先', v: 'ON' },
       ],
       // 可选项组：label + 单选胶囊（seal 表示印章红高亮组）；
-      // 技术栈组的 keys 与 options 一一对应，跳转时按下标取 key 传给后端
+      // 技术栈组 options 为 [{value, label}]（对齐 GET /api/home/summary 新形状），跳转时取选中项的 value 传给后端
       optGroups: [
-        { label: '技术栈', options: ['PYTHON', 'AGENT', 'VUE 3', '混合'], keys: ['python', 'agent', 'vue3', 'mixed'], on: 3, seal: true },
+        { label: '技术栈', options: [
+          { value: 'python', label: 'Python' }, { value: 'agent', label: 'Agent' },
+          { value: 'vue3', label: 'Vue 3' }, { value: 'mixed', label: '混合' },
+        ], on: 3, seal: true },
         { label: '题量', options: ['3 题', '5 题', '7 题'], on: 0, seal: false },
       ],
       cta: '开始记忆 →',
@@ -30,7 +33,10 @@ export const homeSummary = {
         { k: '平均得分', v: '72.4' },
       ],
       optGroups: [
-        { label: '技术栈', options: ['PYTHON', 'AGENT', 'VUE 3', '混合'], on: 3, seal: true },
+        { label: '技术栈', options: [
+          { value: 'python', label: 'Python' }, { value: 'agent', label: 'Agent' },
+          { value: 'vue3', label: 'Vue 3' }, { value: 'go', label: 'Go' }, { value: 'mixed', label: '混合' },
+        ], on: 4, seal: true },
         { label: '题量', options: ['3 题', '4 题', '5 题'], on: 1, seal: false },
       ],
       cta: '进入面试 →',

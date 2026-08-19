@@ -59,6 +59,8 @@ export const getHomeSummary = () => request('/api/home/summary')
 export const getBankOverview = () => request('/api/bank/overview')
 export const postBankFocus = (stack, group, focused) =>
   request('/api/bank/focus', { method: 'POST', body: { stack, group, focused } })
+export const deleteBankQuestion = (id) =>
+  request(`/api/bank/questions/${id}`, { method: 'DELETE' })
 export const getLlmSettings = () => request('/api/settings/llm')
 export const postLlmSettings = (payload) =>
   request('/api/settings/llm', { method: 'POST', body: payload })

@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func
 from sqlmodel import Session as DBSession, select
 
+from api.bank import STACK_DISPLAY
 from api.deps import get_db
 from models import Question, Record, RetryQueueItem, Session
 from timeutil import as_local, local_day_start_utc, local_now, local_today
@@ -69,10 +70,12 @@ def home_summary(db: DBSession = Depends(get_db)):
     all_scores = [r.score_total for r in records if r.score_total is not None]
     overall_avg = round(sum(all_scores) / len(all_scores), 1) if all_scores else None
 
-    # 记忆训练可选技术栈：从题库实际存在的 stack 动态生成（混合不限栈，默认选中）
-    stacks = sorted(db.exec(select(Question.tech_stack).distinct()).all())
-    stack_keys = stacks + ["mixed"]
-    stack_labels = [{"vue3": "VUE 3"}.get(k, k.upper()) for k in stacks] + ["混合"]
+    # 技术栈选项：按题库实际存在的 stack 动态生成（混合不限栈，默认选中），
+    # 形状 [{value, label}]——value 是栈 key（传给 POST /api/sessions），label 是显示名，
+    # 前端不再按下标映射；自由命名的栈用 STACK_DISPLAY 兜底原样显示
+    stacks = [s for s in sorted(db.exec(select(Question.tech_stack).distinct()).all()) if s]
+    stack_options = [{"value": k, "label": STACK_DISPLAY.get(k, k)} for k in stacks]
+    stack_options.append({"value": "mixed", "label": "混合"})
 
     return {
         "date": f"{today:%Y.%m.%d} — {_WEEKDAYS_EN[today.weekday()]}",
@@ -87,8 +90,8 @@ def home_summary(db: DBSession = Depends(get_db)):
                     {"k": "新题优先", "v": "ON"},
                 ],
                 "optGroups": [
-                    # keys 与 options 一一对应，前端按选中下标取 key 传给 POST /api/sessions
-                    {"label": "技术栈", "options": stack_labels, "keys": stack_keys, "on": len(stack_keys) - 1, "seal": True},
+                    # options 为 [{value, label}]，前端取选中项的 value 传给 POST /api/sessions
+                    {"label": "技术栈", "options": stack_options, "on": len(stack_options) - 1, "seal": True},
                     {"label": "题量", "options": ["3 题", "5 题", "7 题"], "on": 0, "seal": False},
                 ],
                 "cta": "开始记忆 →",
@@ -102,7 +105,7 @@ def home_summary(db: DBSession = Depends(get_db)):
                     {"k": "平均得分", "v": str(interview_avg) if interview_avg is not None else "—"},
                 ],
                 "optGroups": [
-                    {"label": "技术栈", "options": ["PYTHON", "AGENT", "VUE 3", "混合"], "on": 3, "seal": True},
+                    {"label": "技术栈", "options": stack_options, "on": len(stack_options) - 1, "seal": True},
                     {"label": "题量", "options": ["3 题", "4 题", "5 题"], "on": 1, "seal": False},
                 ],
                 "cta": "进入面试 →",

@@ -14,12 +14,20 @@ from agents import importer
 from agents.base import SCORE_PASS_THRESHOLD
 from api.deps import get_db
 import database
-from models import Question, QuestionFocus, Record, RetryQueueItem
+from models import Question, QuestionFocus, QuestionGroup, Record, RetryQueueItem, Session
 
 router = APIRouter(prefix="/bank", tags=["bank"])
 
-# 技术栈展示名
-STACK_DISPLAY = {"python": "Python", "agent": "Agent", "vue3": "Vue 3", "database": "Database"}
+# 技术栈展示名（覆盖 importer.ALLOWED_STACKS 全部 canonical key；
+# 白名单外 LLM 自由命名的 key 用 STACK_DISPLAY.get(stack, stack) 兜底原样显示）
+STACK_DISPLAY = {
+    "python": "Python", "java": "Java", "go": "Go", "c": "C", "cpp": "C++",
+    "csharp": "C#", "php": "PHP", "javascript": "JavaScript",
+    "vue3": "Vue 3", "react": "React", "database": "Database",
+    "network": "计算机网络", "os": "操作系统", "algorithm": "算法",
+    "design_pattern": "设计模式", "distributed": "分布式", "linux": "Linux",
+    "devops": "DevOps", "agent": "Agent", "hr": "HR", "other": "其他",
+}
 
 
 def _group_name(question: Question) -> str:
@@ -133,6 +141,176 @@ def bank_focus(req: FocusRequest, db: DBSession = Depends(get_db)):
     return {"ok": True, "changed": changed, "starred": req.focused}
 
 
+@router.delete("/questions/{question_id}")
+def bank_delete_question(question_id: int, db: DBSession = Depends(get_db)):
+    """删除一道题及其全部关联数据（同一事务提交）：
+
+    - 答题记录 Record、重点标记 QuestionFocus、待补答 RetryQueueItem 一并删除
+      （这些小表无外键约束，需手工级联）；
+    - 追问组 QuestionGroup：从 question_ids 中移除该题，组空了连组删除；
+    - 历史会话 Session：摘除 question_ids / quiz_order / current_question_id 里的引用，
+      会话本身与复盘快照（context.review_report）保留。
+    题目不存在返回 404。
+    """
+    question = db.get(Question, question_id)
+    if question is None:
+        raise HTTPException(status_code=404, detail="题目不存在")
+
+    removed_records = 0
+    for r in db.exec(select(Record).where(Record.question_id == question_id)).all():
+        db.delete(r)
+        removed_records += 1
+
+    focus = db.exec(select(QuestionFocus).where(QuestionFocus.question_id == question_id)).first()
+    if focus:
+        db.delete(focus)
+    retry = db.exec(select(RetryQueueItem).where(RetryQueueItem.question_id == question_id)).first()
+    if retry:
+        db.delete(retry)
+
+    removed_groups = 0
+    for g in db.exec(select(QuestionGroup)).all():
+        if question_id in (g.question_ids or []):
+            g.question_ids = [qid for qid in g.question_ids if qid != question_id]
+            if g.question_ids:
+                db.add(g)
+            else:
+                db.delete(g)
+                removed_groups += 1
+
+    touched_sessions = 0
+    for s in db.exec(select(Session)).all():
+        changed = False
+        if question_id in (s.question_ids or []):
+            s.question_ids = [qid for qid in s.question_ids if qid != question_id]
+            changed = True
+        if question_id in (s.quiz_order or []):
+            s.quiz_order = [qid for qid in s.quiz_order if qid != question_id]
+            changed = True
+        if s.current_question_id == question_id:
+            s.current_question_id = None
+            changed = True
+        if changed:
+            db.add(s)
+            touched_sessions += 1
+
+    db.delete(question)
+    db.commit()
+    return {
+        "ok": True,
+        "deleted": question_id,
+        "removed_records": removed_records,
+        "removed_focus": bool(focus),
+        "removed_retry": bool(retry),
+        "removed_groups": removed_groups,
+        "touched_sessions": touched_sessions,
+    }
+
+
+def _question_view(question: Question) -> dict:
+    """题目完整字段视图（PATCH 响应用）。"""
+    return {
+        "id": question.id,
+        "stem": question.stem,
+        "answer": question.answer,
+        "tech_stack": question.tech_stack,
+        "difficulty": question.difficulty,
+        "keywords": question.keywords,
+        "tags": question.tags,
+        "variants": question.variants,
+        "created_at": question.created_at,
+    }
+
+
+class QuestionPatchRequest(BaseModel):
+    """改题请求：全部字段可选，至少提供一个；tech_stack 传空字符串表示不改。"""
+
+    stem: Optional[str] = None
+    answer: Optional[str] = None
+    tech_stack: Optional[str] = None
+    difficulty: Optional[str] = None
+    keywords: Optional[list[str]] = None
+    tags: Optional[list[str]] = None
+
+
+@router.patch("/questions/{question_id}")
+def bank_patch_question(question_id: int, req: QuestionPatchRequest, db: DBSession = Depends(get_db)):
+    """改题：改技术栈 + 改内容（题干/答案/难度/关键词/标签），返回更新后的完整题目。
+
+    - tech_stack 过 importer.normalize_stack：空字符串视为"不改"；
+      非空但归一化后为空（无法清洗出有效 slug）返回 400；
+    - 至少提供一个有效字段，否则 400；题目不存在 404；
+    - 注意：stem 是录入去重的相似度基准（importer.stem_similarity），
+      改题干会影响后续导入时的判重结果，这里只更新不额外处理。
+    """
+    question = db.get(Question, question_id)
+    if question is None:
+        raise HTTPException(status_code=404, detail="题目不存在")
+
+    changed = False
+    if req.tech_stack is not None and req.tech_stack.strip():
+        stack = importer.normalize_stack(req.tech_stack)
+        if not stack:
+            raise HTTPException(status_code=400, detail=f"无法识别的技术栈：{req.tech_stack}")
+        question.tech_stack = stack
+        changed = True
+    if req.stem is not None:
+        stem = req.stem.strip()
+        if not stem:
+            raise HTTPException(status_code=400, detail="题干不能为空")
+        question.stem = stem
+        changed = True
+    if req.answer is not None:
+        question.answer = req.answer.strip()
+        changed = True
+    if req.difficulty is not None:
+        question.difficulty = req.difficulty.strip()
+        changed = True
+    if req.keywords is not None:
+        question.keywords = [str(k) for k in req.keywords]
+        changed = True
+    if req.tags is not None:
+        question.tags = [str(t) for t in req.tags]
+        changed = True
+    if not changed:
+        raise HTTPException(status_code=400, detail="没有提供任何要修改的字段")
+
+    db.add(question)
+    db.commit()
+    db.refresh(question)
+    return _question_view(question)
+
+
+class MigrateRequest(BaseModel):
+    question_ids: list[int]  # 要迁移的题目 id 列表
+    to_stack: str  # 目标技术栈（过 normalize_stack，支持自由命名）
+
+
+@router.post("/questions/migrate")
+def bank_migrate_questions(req: MigrateRequest, db: DBSession = Depends(get_db)):
+    """批量迁移：把选中题目改到目标技术栈（单事务提交）。
+
+    不存在的 id 忽略但在响应 missing 里列出；只改 tech_stack，
+    tags 第 1 个的技术栈大类约定不联动（分组展示以 tech_stack 为准）。
+    """
+    if not req.question_ids:
+        raise HTTPException(status_code=400, detail="question_ids 不能为空")
+    to_stack = importer.normalize_stack(req.to_stack)
+    if not to_stack:
+        raise HTTPException(status_code=400, detail=f"无法识别的目标技术栈：{req.to_stack}")
+
+    ids = list(dict.fromkeys(req.question_ids))  # 去重保序
+    existing = {q.id: q for q in db.exec(select(Question).where(Question.id.in_(ids))).all()}
+    missing = [qid for qid in ids if qid not in existing]
+    for qid in ids:
+        question = existing.get(qid)
+        if question is not None:
+            question.tech_stack = to_stack
+            db.add(question)
+    db.commit()
+    return {"ok": True, "moved": len(ids) - len(missing), "missing": missing, "to_stack": to_stack}
+
+
 # ---------- 录入题库（含清洗去重） ----------
 
 class ImportRequest(BaseModel):
@@ -238,13 +416,13 @@ async def _run_import(text: str, dedupe: bool, db: DBSession,
     for idx, (it, mark) in enumerate(zip(valid, enrich_marks), start=1):
         _report("去重入库", idx, len(valid))
         title = _title_of(it["stem"])
-        stack = importer.normalize_stack(it.get("tech_stack")) or "python"
+        stack = importer.normalize_stack(it.get("tech_stack")) or "other"
         answer = str(it.get("answer") or "").strip()
         if not answer:
             result["errors"].append({"title": title, "reason": "缺少标准答案，且 LLM 未能补全"})
             continue
         if not it.get("tech_stack"):
-            it["tech_stack"] = stack  # LLM 也没给出分类时兜底 python
+            it["tech_stack"] = stack  # LLM 也没给出分类时兜底 other（不进任何技术栈分组）
         if dedupe:
             best_stem, best_sim = None, 0.0
             for other in existing_stems + accepted_stems:
@@ -285,7 +463,7 @@ async def bank_import(req: ImportRequest, db: DBSession = Depends(get_db)):
     1. 解析 text（JSON 数组直接解析；纯文本按 空行/--- 切分，识别"答案：""技术栈：""知识点："行）；
        force_llm_extract=true 时跳过规则分段，整段切块走 LLM 提取真问题；
     2. 规则解析不出的片段，一次 LLM 调用做结构化提取；
-    3. 缺答案/缺技术栈的题，一次 LLM 调用批量补全（tech_stack 限定 python/agent/vue3/database）；
+    3. 缺答案/缺技术栈的题，一次 LLM 调用批量补全（tech_stack 分类指引见 importer._STACK_GUIDE）；
     4. dedupe=true 时，与库内题目 + 本批次已接受题逐一算题干相似度，≥ 阈值跳过；
     5. 通过的题插入 Question 表（tags=[技术栈, 知识点]，与种子脚本约定一致）。
 

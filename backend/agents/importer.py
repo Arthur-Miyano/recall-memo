@@ -24,17 +24,58 @@ from .parsing import extract_json_array
 # 题干相似度阈值：>= 该值视为重复，跳过入库
 SIMILARITY_THRESHOLD = 0.85
 
-# 允许的技术栈分类（与种子题库约定一致；database 为数据库题新增）
-ALLOWED_STACKS = {"python", "agent", "vue3", "database"}
+# 常见技术栈分类清单（canonical key）。白名单外 LLM 也可自由命名分类，
+# normalize_stack 会清洗为小写 slug 原样保留，不再丢弃
+ALLOWED_STACKS = {
+    # 语言
+    "python", "java", "go", "c", "cpp", "csharp", "php", "javascript",
+    # 前端框架
+    "vue3", "react",
+    # 数据库 / 计算机基础
+    "database", "network", "os", "algorithm", "design_pattern",
+    # 分布式与中间件 / 运维云原生 / AI / 软技能 / 兜底
+    "distributed", "linux", "devops", "agent", "hr", "other",
+}
 
 # 用户手填技术栈的常见别名 → 规范 key
+# 注意：单独的 "c" 不收别名（单字母误判风险），但 "c" 在 ALLOWED_STACKS 里可精确命中
 _STACK_ALIASES = {
-    "py": "python", "python": "python", "python3": "python",
+    "py": "python", "python": "python", "python3": "python", "后端": "python",
+    "java": "java",
+    "go": "go", "golang": "go",
+    "c语言": "c",
+    "c++": "cpp", "cpp": "cpp", "cxx": "cpp",
+    "c#": "csharp", "csharp": "csharp",
+    "php": "php",
+    "js": "javascript", "ts": "javascript", "javascript": "javascript",
+    "typescript": "javascript", "node": "javascript", "nodejs": "javascript",
     "vue": "vue3", "vue3": "vue3", "vue 3": "vue3", "vuejs": "vue3", "前端": "vue3",
-    "agent": "agent", "agents": "agent", "智能体": "agent", "大模型": "agent", "llm": "agent",
-    "database": "database", "db": "database", "mysql": "database", "sql": "database",
-    "数据库": "database", "后端": "python",
+    "react": "react", "reactjs": "react",
+    "database": "database", "db": "database", "sql": "database", "数据库": "database",
+    "mysql": "database", "redis": "database", "mongodb": "database", "mongo": "database",
+    "network": "network", "计算机网络": "network", "计网": "network", "网络": "network",
+    "tcp": "network", "tcp/ip": "network", "http": "network",
+    "os": "os", "操作系统": "os",
+    "algorithm": "algorithm", "algorithms": "algorithm", "算法": "algorithm",
+    "数据结构": "algorithm", "数据结构与算法": "algorithm", "leetcode": "algorithm",
+    "design_pattern": "design_pattern", "设计模式": "design_pattern",
+    "distributed": "distributed", "分布式": "distributed", "微服务": "distributed",
+    "消息队列": "distributed", "mq": "distributed", "kafka": "distributed",
+    "rabbitmq": "distributed", "系统设计": "distributed",
+    "linux": "linux", "shell": "linux", "运维": "linux",
+    "devops": "devops", "docker": "devops", "k8s": "devops",
+    "kubernetes": "devops", "nginx": "devops",
+    "agent": "agent", "agents": "agent", "智能体": "agent", "大模型": "agent",
+    "llm": "agent", "rag": "agent", "ai": "agent",
+    "hr": "hr", "软技能": "hr", "项目经验": "hr",
 }
+
+# LLM 提示词共用的技术栈分类指引（开放式：白名单 + 允许自命名）
+_STACK_GUIDE = (
+    "常见分类：python / java / go / c / cpp / javascript / vue3 / react / database / "
+    "network / os / algorithm / design_pattern / distributed / linux / devops / agent / hr；"
+    "都不是就按内容自命名一个简短的英文小写分类；判断不了留空字符串"
+)
 
 # 题内字段标签行：答案：/ 技术栈：/ 知识点：（兼容半角冒号与英文 key）
 _LABEL_PATTERNS = {
@@ -65,12 +106,29 @@ _PDF_EXTRACT_SYSTEM = (
 )
 
 
+# 自由命名分类的清洗规则：只留字母数字和 +#（如 "C++"→别名 cpp；"WebAssembly"→"webassembly"）
+_STACK_SLUG = re.compile(r"[^a-z0-9+#]+")
+
+
 def normalize_stack(raw: Optional[str]) -> Optional[str]:
-    """技术栈归一化：别名映射 + 白名单校验，无法识别返回 None（交给 LLM 分类）。"""
+    """技术栈归一化，返回值可直接入库：
+
+    - 空输入（None/空串/纯空白）返回 None，表示"未识别"，交给 LLM 分类；
+    - 别名表命中 → canonical key；白名单 ALLOWED_STACKS 精确命中 → 原值；
+    - 其余非空输入 → 清洗后的小写 slug（去空白、只留字母数字和 +#）原样保留，
+      LLM 自由命名的分类（如 "rust"）不被丢弃；清洗后为空则返回 None。
+    """
     if not raw:
         return None
     key = str(raw).strip().lower()
-    return _STACK_ALIASES.get(key) or (key if key in ALLOWED_STACKS else None)
+    if not key:
+        return None
+    if key in _STACK_ALIASES:
+        return _STACK_ALIASES[key]
+    if key in ALLOWED_STACKS:
+        return key
+    slug = _STACK_SLUG.sub("", key)
+    return slug or None
 
 
 def _norm_text(s: str) -> str:
@@ -195,7 +253,7 @@ async def llm_extract(chunks: list[str]) -> list[dict[str, Any]]:
             "输出 JSON 数组，每个元素字段：\n"
             "- stem：标准题干，一句面试提问；\n"
             "- answer：片段里给出的答案（没有就留空字符串）；\n"
-            "- tech_stack：python / agent / vue3 / database 四选一（判断不了就留空字符串）；\n"
+            f"- tech_stack：{_STACK_GUIDE}；\n"
             "- knowledge_point：知识点短语（如 装饰器、响应式原理）。\n\n"
             f"{numbered}\n\n只输出 JSON 数组本身。"
         )},
@@ -254,7 +312,7 @@ async def llm_enrich(
             {"role": "user", "content": (
                 "下面是若干面试题（JSON 数组），请为每题补全缺失字段：\n"
                 "- answer 为空时：生成标准答案，150~350 字，条理清晰，覆盖核心考点；\n"
-                "- tech_stack 为空时：按内容归入 python / agent / vue3 / database 之一；\n"
+                f"- tech_stack 为空时：按内容分类（{_STACK_GUIDE}）；\n"
                 "- knowledge_point 为空时：给一个知识点短语（如 装饰器、GIL、响应式原理）；\n"
                 "- 另给出 keywords：3~5 个关键词数组，以及 difficulty：basic / medium / hard。\n"
                 "已有字段保持原样不要改写。输出 JSON 数组，每个元素带原 index 与全部字段。\n\n"
@@ -365,8 +423,8 @@ async def _extract_chunk_with_llm(chunk: str, index: int) -> tuple[list[dict[str
             "- 只收录有明确问题形态的条目（如「什么是 X」「为什么 Y」「请解释 Z」「X 和 Y 有什么区别」）；\n"
             "- 忽略章节标题、目录、叙述性正文与铺垫段落，不要把正文段落当成题干；\n"
             "- 原文自带答案的，用原文答案（可适当整理通顺）；没有答案的 answer 留空字符串；\n"
-            "- tech_stack 四选一：python / agent / vue3 / database"
-            "（数据库、MySQL、索引、事务类归 database；判断不了留空字符串）。\n"
+            f"- tech_stack：{_STACK_GUIDE}（数据库、MySQL、索引、事务类归 database；"
+            "Go、Golang、协程、channel 类归 go）。\n"
             "输出 JSON 数组，每个元素字段：stem（完整问句题干）、answer、tech_stack、"
             "knowledge_point（知识点短语，如 索引、事务隔离级别）、keywords（3~5 个关键词数组）。\n"
             "没有可提取的题就输出空数组 []。只输出 JSON 数组本身。\n\n"

@@ -67,6 +67,118 @@ class TestAssistantApi:
         r2 = client.post("/api/assistant/chat", json={"message": "继续聊"})
         assert r2.json()["session_id"] == sid, "应落入最近会话而不是新建"
 
+    def test_chat_without_action_block_returns_null(self, client, fake_llm):
+        """普通回复：action 为 null。"""
+        body = client.post("/api/assistant/chat", json={"message": "总结下"}).json()
+        assert body["action"] is None
+        assert body["reply"] == fake_llm.chat_reply
+
+
+# ---------------------------------------------------------------------------
+# assistant 动作提议协议（```action 围栏块解析与校验）
+# ---------------------------------------------------------------------------
+
+def _action_reply(payload: dict, prefix: str = "好的，已理解。") -> str:
+    import json as _json
+    return f"{prefix}\n```action\n{_json.dumps(payload, ensure_ascii=False)}\n```"
+
+
+class TestAssistantActionBlock:
+    def test_delete_action_parsed(self, client, fake_llm, seed_questions):
+        """合法 delete_questions：action 字段正确，reply 里动作块已剥掉，落库的回复也不含块。"""
+        seed_questions(2)
+        fake_llm.chat_reply = _action_reply(
+            {"type": "delete_questions", "question_ids": [1, 2], "summary": "删除 2 道题"}
+        )
+        body = client.post("/api/assistant/chat", json={"message": "把这两道题删掉"}).json()
+        assert body["reply"] == "好的，已理解。"
+        assert body["action"] == {
+            "type": "delete_questions", "question_ids": [1, 2], "summary": "删除 2 道题",
+        }
+        assert any("动作提议" in t for t in body["thinking"])
+        history = client.get("/api/assistant/history", params={"session_id": body["session_id"]}).json()
+        assert "```action" not in history["messages"][1]["content"], "落库回复不应含动作块"
+
+    def test_edit_action_parsed(self, client, fake_llm, seed_questions):
+        """合法 edit_question：恰好 1 题 + changes。"""
+        seed_questions(1)
+        fake_llm.chat_reply = _action_reply(
+            {"type": "edit_question", "question_ids": [1],
+             "changes": {"stem": "新题干", "difficulty": "hard"}, "summary": "修改题干和难度"}
+        )
+        body = client.post("/api/assistant/chat", json={"message": "改掉第 1 题"}).json()
+        action = body["action"]
+        assert action["type"] == "edit_question"
+        assert action["changes"] == {"stem": "新题干", "difficulty": "hard"}
+
+    def test_migrate_action_parsed(self, client, fake_llm, seed_questions):
+        """合法 migrate_questions：ids + to_stack。"""
+        seed_questions(3)
+        fake_llm.chat_reply = _action_reply(
+            {"type": "migrate_questions", "question_ids": [1, 2, 3],
+             "to_stack": "database", "summary": "迁移 3 道题到 database"}
+        )
+        body = client.post("/api/assistant/chat", json={"message": "迁移到数据库分组"}).json()
+        assert body["action"]["type"] == "migrate_questions"
+        assert body["action"]["to_stack"] == "database"
+        assert body["action"]["question_ids"] == [1, 2, 3]
+
+    def test_bad_json_block_discarded(self, client, fake_llm):
+        """动作块 JSON 损坏：action 为 null，回复照常（块被剥掉）。"""
+        fake_llm.chat_reply = "好的。\n```action\n{这 不是 JSON\n```"
+        resp = client.post("/api/assistant/chat", json={"message": "删题"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["action"] is None
+        assert body["reply"] == "好的。"
+
+    def test_unknown_type_discarded(self, client, fake_llm):
+        fake_llm.chat_reply = _action_reply({"type": "drop_bank", "question_ids": [1]})
+        body = client.post("/api/assistant/chat", json={"message": "删库"}).json()
+        assert body["action"] is None
+        assert body["reply"] == "好的，已理解。"
+
+    def test_edit_without_changes_discarded(self, client, fake_llm):
+        fake_llm.chat_reply = _action_reply({"type": "edit_question", "question_ids": [1]})
+        body = client.post("/api/assistant/chat", json={"message": "改题"}).json()
+        assert body["action"] is None
+
+    def test_edit_with_illegal_change_key_discarded(self, client, fake_llm):
+        fake_llm.chat_reply = _action_reply(
+            {"type": "edit_question", "question_ids": [1], "changes": {"id": 99}}
+        )
+        body = client.post("/api/assistant/chat", json={"message": "改题"}).json()
+        assert body["action"] is None
+
+    def test_edit_multiple_ids_discarded(self, client, fake_llm):
+        """edit_question 一次只能改一道题。"""
+        fake_llm.chat_reply = _action_reply(
+            {"type": "edit_question", "question_ids": [1, 2], "changes": {"stem": "x"}}
+        )
+        body = client.post("/api/assistant/chat", json={"message": "改题"}).json()
+        assert body["action"] is None
+
+    def test_too_many_ids_discarded(self, client, fake_llm):
+        fake_llm.chat_reply = _action_reply(
+            {"type": "delete_questions", "question_ids": list(range(1, 52))}
+        )
+        body = client.post("/api/assistant/chat", json={"message": "全删了"}).json()
+        assert body["action"] is None
+
+    def test_bad_ids_discarded(self, client, fake_llm):
+        """ids 为空 / 含非整数（字符串、bool）→ 丢弃。"""
+        for ids in ([], ["1"], [True]):
+            fake_llm.chat_reply = _action_reply({"type": "delete_questions", "question_ids": ids})
+            body = client.post("/api/assistant/chat", json={"message": "删题"}).json()
+            assert body["action"] is None, f"ids={ids} 应被拒绝"
+
+    def test_migrate_without_to_stack_discarded(self, client, fake_llm):
+        fake_llm.chat_reply = _action_reply(
+            {"type": "migrate_questions", "question_ids": [1]}
+        )
+        body = client.post("/api/assistant/chat", json={"message": "迁移"}).json()
+        assert body["action"] is None
+
 
 # ---------------------------------------------------------------------------
 # bank/import：规则解析、LLM 提取兜底、LLM 补全、相似度去重

@@ -43,3 +43,11 @@ export const postBankImportJob = ({ files = [], text = '', dedupe = true }) => {
 export const getBankImportJob = (id) => request(`/api/bank/import-jobs/${id}`)
 // 最近一次任务：打开面板时调用，还在跑就重新挂上轮询
 export const getBankImportJobLatest = () => request('/api/bank/import-jobs/latest')
+
+/* ---------- 题库题目编辑 / 迁移 ---------- */
+// 改题：全部字段可选（至少一个）；tech_stack 传空字符串 = 不改 → 响应是题目完整字段
+export const patchBankQuestion = (id, payload) =>
+  request(`/api/bank/questions/${id}`, { method: 'PATCH', body: payload })
+// 批量迁移到目标栈（过 normalize_stack，支持自由命名）→ {ok, moved, missing, to_stack}
+export const migrateBankQuestions = (questionIds, toStack) =>
+  request('/api/bank/questions/migrate', { method: 'POST', body: { question_ids: questionIds, to_stack: toStack } })

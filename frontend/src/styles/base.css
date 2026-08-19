@@ -465,6 +465,23 @@ body::before {
 }
 .chat-input button { border:none; border-left:1px solid var(--ink); background: var(--ink); color: var(--paper); font-family: var(--mono); font-size:12px; padding:0 18px; cursor:pointer; }
 
+/* 动作卡片：助手提议的题库写操作（删/改/迁移），确认后执行。纸墨风细边框 + 印章红点缀 */
+.action-card { border:1px solid var(--ink); background: var(--paper); padding:10px 12px; margin-top:8px; }
+.ac-head { font-family: var(--mono); font-size:10px; letter-spacing:.14em; color: var(--seal); margin-bottom:6px; }
+.ac-summary { font-size:12.5px; line-height:1.7; margin-bottom:10px; }
+.ac-btns { display:flex; gap:8px; }
+.ac-btns button {
+  font-family: var(--mono); font-size:11px; letter-spacing:.06em; padding:4px 14px;
+  cursor:pointer; border:1px solid var(--ink); transition: opacity .15s, color .15s, border-color .15s;
+}
+.ac-ok { background: var(--ink); color: var(--paper); }
+.ac-ok:hover:not(:disabled) { opacity:.85; }
+.ac-no { background:transparent; color: var(--ink-70); }
+.ac-no:hover:not(:disabled) { border-color: var(--ink); color: var(--ink); }
+.ac-btns button:disabled { opacity:.45; cursor:default; }
+.ac-state { font-family: var(--mono); font-size:11px; letter-spacing:.1em; color: var(--ink-45); }
+.ac-state.done { color: var(--seal); }
+
 /* 会话管理：头部「≡ 对话」按钮 + 面板内抽屉覆盖层（纸墨风、mono 小字标注） */
 .chat-head .sess-btn {
   font-family: var(--mono); font-size:11px; letter-spacing:.08em; cursor:pointer;

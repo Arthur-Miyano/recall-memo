@@ -3,13 +3,16 @@
 
 请求：{message} 自由输入，或 {quick: today|recent|all|focus|plan} 快捷指令；
 可选 session_id 指定会话（不带则落入最近会话，没有会话时自动建一个）。
-响应：{thinking: [...], reply: "...", session_id} —— thinking 为 Agent 调用链的逐步描述（带具体数据）。
+响应：{thinking: [...], reply: "...", action, session_id} —— thinking 为 Agent 调用链的逐步描述（带具体数据）；
+action 为 LLM 提议的题库写操作（删除/改题/迁移，```action 围栏块解析而来，校验失败为 null），
+后端不执行，前端渲染确认卡片、用户确认后直接调题库接口。
 持久化：每次问答写入 chat_messages 表（用户消息与助手回复各一条，thinking 存回复那条），
 并刷新所属 chat_sessions 的 updated_at（首条用户消息截断为会话标题）。
 GET /history?session_id=&limit=50 按时间正序返回该会话历史（不带 session_id 兼容旧行为：全量最近 limit 条）。
 会话管理：GET/POST /sessions、DELETE /sessions/{id}。
 """
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -40,7 +43,81 @@ _SYSTEM_PROMPT = (
     "请基于数据用简洁的中文回答（可用「1. 2. 3.」式序号列表），不要编造数据里没有的内容，"
     "数据不足时如实说明并给出可执行的建议。回答控制在 200 字以内。"
     "注意：前端按纯文本渲染，不要使用 Markdown 语法（#、**、- 列表等）。"
+    "\n\n【动作提议协议】\n"
+    "当用户明确要求删除题目、修改题目内容（题干/答案/技术栈/难度/关键词/标签）、"
+    "或把题目迁移到别的技术栈分组时，在正常的中文说明之后，于回复末尾额外输出一个动作块：\n"
+    "```action\n"
+    '{"type":"delete_questions|edit_question|migrate_questions",'
+    '"question_ids":[题目id整数列表],'
+    '"to_stack":"目标技术栈（仅 migrate_questions 必填）",'
+    '"changes":{"要改的字段":"新值（仅 edit_question 必填，键只允许 '
+    'stem/answer/tech_stack/difficulty/keywords/tags）"},'
+    '"summary":"给用户看的一句话操作说明"}\n'
+    "```\n"
+    "规则：question_ids 必须从档案里的题库清单中取真实存在的 id（凭题干/序号/技术栈匹配），"
+    "一次最多 50 题；edit_question 一次只能改一道题；"
+    "summary 用一句话向用户说清将做什么（含题目数量、目标技术栈或要改的字段）。"
+    "动作不会自动执行，前端会向用户展示确认卡片，确认后才生效，所以请照常给出文字说明。"
+    "普通问答（总结、建议、闲聊、知识点解答）绝对不要输出动作块。"
 )
+
+# ---------- 动作提议协议 ----------
+# LLM 回复末尾可带 ```action 围栏块，后端只解析校验、随响应返回，不执行；
+# 前端渲染确认卡片，用户确认后由前端直接调题库接口。
+_ACTION_BLOCK_RE = re.compile(r"```action\s*\n(.*?)```", re.DOTALL)
+_ACTION_TYPES = ("delete_questions", "edit_question", "migrate_questions")
+_EDIT_FIELDS = {"stem", "answer", "tech_stack", "difficulty", "keywords", "tags"}
+_ACTION_MAX_IDS = 50
+
+
+def _extract_action(reply: str) -> tuple[str, Optional[dict]]:
+    """从 LLM 回复里检出动作块：剥掉块文本，校验结构。
+
+    返回 (清洗后的回复文本, action 或 None)。围栏块只要出现就从文本中剥掉；
+    结构校验失败（坏 JSON、未知 type、ids 非法、changes 含非法键等）则丢弃动作，
+    只回文本，不报错。
+    """
+    m = _ACTION_BLOCK_RE.search(reply)
+    if not m:
+        return reply, None
+    text = (reply[: m.start()] + reply[m.end():]).strip()
+    try:
+        raw = json.loads(m.group(1))
+    except json.JSONDecodeError:
+        return text, None
+    if not isinstance(raw, dict) or raw.get("type") not in _ACTION_TYPES:
+        return text, None
+
+    ids = raw.get("question_ids")
+    if (
+        not isinstance(ids, list)
+        or not ids
+        or len(ids) > _ACTION_MAX_IDS
+        or any(not isinstance(i, int) or isinstance(i, bool) for i in ids)
+    ):
+        return text, None
+
+    action: dict = {
+        "type": raw["type"],
+        "question_ids": ids,
+        "summary": raw.get("summary") if isinstance(raw.get("summary"), str) else "",
+    }
+    if action["type"] == "edit_question":
+        changes = raw.get("changes")
+        if (
+            len(ids) != 1
+            or not isinstance(changes, dict)
+            or not changes
+            or any(k not in _EDIT_FIELDS for k in changes)
+        ):
+            return text, None
+        action["changes"] = changes
+    if action["type"] == "migrate_questions":
+        to_stack = raw.get("to_stack")
+        if not isinstance(to_stack, str) or not to_stack.strip():
+            return text, None
+        action["to_stack"] = to_stack.strip()
+    return text, action
 
 
 class ChatRequest(BaseModel):
@@ -135,6 +212,17 @@ def _collect_profile(db: DBSession) -> tuple[str, list[str]]:
         "近 7 天每日统计："
         + ("；".join(f"{s.date} 答 {s.total_count} 题（成 {s.success_count} / 败 {s.fail_count}）" for s in reversed(daily)) or "无"),
     ]
+    # 题库清单：供动作提议把"第 5 题""Redis 的题"解析成真实 id。紧凑格式一题一行，
+    # 超过 300 题截断并说明（只影响动作提议的可选范围，不影响上面的统计数据）
+    lines.append(
+        "题库清单（#id [技术栈] 题干前20字）："
+        + ("\n" if questions else "空")
+        + "\n".join(
+            f"#{q.id} [{q.tech_stack}] {q.stem[:20].replace(chr(10), ' ')}" for q in questions[:300]
+        )
+    )
+    if len(questions) > 300:
+        lines.append(f"（题库共 {len(questions)} 题，清单仅列出前 300 题；范围外的题请用户说明后另行处理）")
     return "\n".join(lines), thinking
 
 
@@ -164,10 +252,17 @@ async def assistant_chat(req: ChatRequest, db: DBSession = Depends(get_db)):
         provider, content = await llm_router.chat(messages, temperature=0.5)
     except LLMProviderUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    # 检出动作提议：剥掉动作块后再落库/返回；动作本身不在后端执行，由前端确认后调题库接口
+    reply, action = _extract_action(content)
     thinking.append(f"智能助理 Agent：{provider} 模型生成答复，{len(content)} 字")
+    if action is not None:
+        thinking.append(
+            f"总控 Agent：检出动作提议 {action['type']}（{len(action['question_ids'])} 题），"
+            "待用户在前端确认后执行"
+        )
     sess = _resolve_session(db, req.session_id)
-    _save_chat(db, sess, message, content, thinking)
-    return {"thinking": thinking, "reply": content, "session_id": sess.id}
+    _save_chat(db, sess, message, reply, thinking)
+    return {"thinking": thinking, "reply": reply, "action": action, "session_id": sess.id}
 
 
 def _save_chat(db: DBSession, sess: ChatSession, question: str, reply: str, thinking: list[str]) -> None:

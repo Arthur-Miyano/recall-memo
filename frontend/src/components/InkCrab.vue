@@ -2,7 +2,9 @@
 // 全局组件：水墨小螃蟹（智能助理入口）+ 对话面板
 // 职责：常驻页面、原地挥钳待机；点击开合对话面板（5 个快捷提示词 + 自由输入 + 思考过程展示）；
 //       可按住拖动到任意位置（位置存 localStorage），待机时偶尔吐泡泡，拖动结束 / 收到答复时吐一串
-// 数据流：POST /api/assistant/chat（{message|quick, session_id?}）→ {thinking, reply, session_id}，每次问答后端落库；
+// 数据流：POST /api/assistant/chat（{message|quick, session_id?}）→ {thinking, reply, action, session_id}，每次问答后端落库；
+//         action 为 LLM 提议的题库写操作（删/改/迁移），后端不执行——渲染确认卡片，
+//         用户点「确认执行」后由本组件直接调题库接口（DELETE 逐个 / PATCH / POST migrate），结果追加为新消息；
 //         GET  /api/assistant/sessions + POST /sessions + DELETE /sessions/{id} —— 多会话管理（头部「≡ 对话」抽屉）；
 //         GET  /api/assistant/history?session_id= —— 切换会话 / 首次打开时拉取该会话最近 50 条渲染；
 //         当前会话 id 存 localStorage（recall-chat-session），重开面板恢复；
@@ -19,7 +21,7 @@ import { assistant } from '../mock/assistant'
 import {
   assistantChat, getAssistantHistory,
   getAssistantSessions, createAssistantSession, deleteAssistantSession,
-  offline,
+  request, offline,
 } from '../api'
 
 // 快捷按钮 → 后端 quick 指令
@@ -289,7 +291,13 @@ async function ask(text, quick) {
       localStorage.setItem('recall-chat-session', String(d.session_id))
     }
     thinkingMsg.think = d.thinking
-    messages.value.push({ who: '记忆助手', text: d.reply })
+    // 助手消息可携带动作提议（后端只校验不执行）：随消息渲染确认卡片
+    const msg = { who: '记忆助手', text: d.reply }
+    if (d.action && typeof d.action === 'object') {
+      msg.action = d.action
+      msg.actionState = 'pending' // pending → done / cancelled；执行失败保持 pending 可重试
+    }
+    messages.value.push(msg)
   } catch (e) {
     console.warn('[crab] 助理接口失败，回退 mock 演示回复：', e.message)
     offline.value = true // 展示了演示回复，置全局离线角标（下一次任意请求成功后自动清除）
@@ -305,6 +313,55 @@ function send() {
   const t = inputText.value.trim()
   if (t) { ask(t); inputText.value = '' }
 }
+
+/* ---------- 动作卡片：确认后执行题库写操作 ---------- */
+// 后端只提议不执行；确认后由这里直接调题库接口（DELETE 逐个 / PATCH / migrate）
+async function runAction(m) {
+  if (m.actionState !== 'pending' || m.actionRunning) return
+  const a = m.action
+  m.actionRunning = true
+  try {
+    let result = ''
+    if (a.type === 'delete_questions') {
+      let deleted = 0
+      for (const id of a.question_ids) {
+        try { await request(`/api/bank/questions/${id}`, { method: 'DELETE' }); deleted++ }
+        catch (e) { console.warn(`[crab] 删除题目 #${id} 失败：`, e.message) }
+      }
+      result = `已删除 ${deleted} 道题`
+        + (deleted < a.question_ids.length ? `（${a.question_ids.length - deleted} 道删除失败）` : '')
+    } else if (a.type === 'edit_question') {
+      await request(`/api/bank/questions/${a.question_ids[0]}`, { method: 'PATCH', body: a.changes })
+      result = `已更新题目 #${a.question_ids[0]}（${Object.keys(a.changes).join('、')}）`
+    } else if (a.type === 'migrate_questions') {
+      const d = await request('/api/bank/questions/migrate', {
+        method: 'POST', body: { question_ids: a.question_ids, to_stack: a.to_stack },
+      })
+      result = `已把 ${d.moved} 道题迁移到「${d.to_stack}」`
+        + (d.missing && d.missing.length ? `（${d.missing.length} 道不存在被跳过）` : '')
+    } else {
+      throw new Error(`未知动作类型：${a.type}`)
+    }
+    m.actionState = 'done'
+    messages.value.push({ who: '记忆助手', text: `${result}。题库已更新，到「题库」页可看到最新状态。` })
+  } catch (e) {
+    console.warn('[crab] 动作执行失败：', e.message)
+    // 保持 pending 允许重试
+    messages.value.push({ who: '记忆助手', text: `执行失败：${e.message}。可以点卡片上的「确认执行」重试，或取消。` })
+  } finally {
+    m.actionRunning = false
+    scrollBottom()
+  }
+}
+
+function cancelAction(m) {
+  if (m.actionState !== 'pending' || m.actionRunning) return
+  m.actionState = 'cancelled'
+}
+
+// 卡片头部的动作类型标注
+const ACTION_LABELS = { delete_questions: '删除题目', edit_question: '修改题目', migrate_questions: '迁移题目' }
+function actionLabel(a) { return ACTION_LABELS[a.type] || '题库操作' }
 </script>
 
 <template>
@@ -374,6 +431,20 @@ function send() {
           <div v-for="(t, ti) in m.think" :key="ti">{{ t }}</div>
         </div>
         <template v-else>{{ m.text }}</template>
+        <!-- 动作卡片：助手提议的题库写操作，确认后才执行 -->
+        <div class="action-card" v-if="m.action">
+          <div class="ac-head">{{ actionLabel(m.action) }} · {{ m.action.question_ids.length }} 题</div>
+          <div class="ac-summary">{{ m.action.summary || '（无操作说明）' }}</div>
+          <div class="ac-btns" v-if="m.actionState === 'pending'">
+            <button class="ac-ok" :disabled="m.actionRunning" @click="runAction(m)">
+              {{ m.actionRunning ? '执行中…' : '确认执行' }}
+            </button>
+            <button class="ac-no" :disabled="m.actionRunning" @click="cancelAction(m)">取消</button>
+          </div>
+          <div class="ac-state" :class="m.actionState" v-else>
+            {{ m.actionState === 'done' ? '✓ 已执行' : '已取消' }}
+          </div>
+        </div>
       </div>
     </div>
     <div class="chat-input">
