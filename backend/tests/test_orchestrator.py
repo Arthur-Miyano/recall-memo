@@ -4,8 +4,8 @@
 - 记忆训练全流程：create -> MEMORIZE_SHOW -> start_quiz -> MEMORIZE_QUIZ -> answer×N -> IDLE + summary；
 - 非法跳转抛 StateError：未 start_quiz 就 answer / SHOW 阶段重复 start_quiz 边界 /
   review 后再 answer / EXPIRED 会话任何操作；
-- 面试模式：answer 只回执不出分、skip 记 0 分且入待补答队列、终局 INTERVIEW_REVIEW + 报告；
-- 待补答队列语义：答错入队、补答（记忆训练重背）及格出队；
+- 面试模式：answer 只回执不出分、skip 记 0 分且不入待补答队列、终局 INTERVIEW_REVIEW + 报告；
+- 待补答队列语义：答错入队、补答（记忆训练重背）及格出队、补答不及格亦出队不再入队；
 - 创建参数校验：未知模式 / 题量范围 / memorize 只允许 3/5/7。
 """
 import pytest
@@ -172,6 +172,47 @@ class TestRetryQueueSemantics:
             await orch.run("answer", db=db, session_id=sid2, answer="这次会了。")
         assert _retry_ids(db) == set(), "补答及格后应全部出队"
 
+    async def test_retry_fail_dequeues_without_reenqueue(self, orch, db, seed_questions, fake_llm):
+        """每题仅允许补答一次：补答（队列题重背）仍不及格 -> 出队且不再入队，不留队列脏数据。"""
+        questions = seed_questions(3)
+        _set_score(fake_llm, 30)  # 不及格
+
+        created = await orch.run("create_session", db=db, mode="memorize", count=3)
+        sid = created["session_id"]
+        await orch.run("start_quiz", db=db, session_id=sid)
+        for _ in range(3):
+            await orch.run("answer", db=db, session_id=sid, answer="不会。")
+        assert _retry_ids(db) == {q.id for q in questions}, "普通答题不及格应入队"
+
+        # 补答仍不及格：出队且不再入队（补答机会已消耗）
+        _set_score(fake_llm, 40)  # 补答依然不及格
+        created2 = await orch.run("create_session", db=db, mode="memorize", count=3)
+        sid2 = created2["session_id"]
+        await orch.run("start_quiz", db=db, session_id=sid2)
+        for _ in range(3):
+            await orch.run("answer", db=db, session_id=sid2, answer="还是不会。")
+
+        assert _retry_ids(db) == set(), "补答不及格应出队且不再入队"
+        retry_records = db.exec(
+            select(Record).where(Record.session_id == sid2)
+        ).all()
+        assert all(r.is_retry for r in retry_records), "队列题的重背应标记为补答记录"
+        assert all(r.need_followup for r in retry_records), "补答不及格仍是 need_followup（分数如实记录）"
+
+    async def test_non_retry_pass_dequeues_regression(self, orch, db, seed_questions, fake_llm):
+        """回归：非补答记录维持现状——不及格入队、及格出队。"""
+        questions = seed_questions(3)
+        # 先人工入队一题，再答及格 -> 非补答路径出队
+        _set_score(fake_llm, 30)
+        created = await orch.run("create_session", db=db, mode="memorize", count=3)
+        sid = created["session_id"]
+        await orch.run("start_quiz", db=db, session_id=sid)
+        for _ in range(3):
+            await orch.run("answer", db=db, session_id=sid, answer="不会。")
+        assert _retry_ids(db) == {q.id for q in questions}
+        records = db.exec(select(Record).where(Record.session_id == sid)).all()
+        assert all(not r.is_retry for r in records), "首次作答不应标记为补答"
+
 
 # ---------------------------------------------------------------------------
 # 面试模式
@@ -212,7 +253,7 @@ class TestInterviewFlow:
         # 低于 60：已悄悄入待补答队列
         assert record.question_id in _retry_ids(db)
 
-    async def test_skip_marks_zero_and_enqueues(self, orch, db, seed_questions):
+    async def test_skip_marks_zero_and_not_enqueued(self, orch, db, seed_questions):
         sid, _ = await self._start_interview(orch, db, seed_questions)
         current = await orch.run("current", db=db, session_id=sid)
         qid = current["question_id"]
@@ -222,8 +263,8 @@ class TestInterviewFlow:
         record = db.get(Record, resp["record_id"])
         assert record.skipped is True
         assert record.score_total == 0.0
-        assert record.need_followup is False, "跳过不消耗补答机会（字段语义快照，待确认）"
-        assert qid in _retry_ids(db), "跳过的题同样入待补答队列"
+        assert record.need_followup is False, "跳过不消耗补答机会"
+        assert qid not in _retry_ids(db), "跳过不给补答，不入待补答队列"
 
     async def test_skip_only_allowed_in_interview_answer(self, orch, db, seed_questions):
         """记忆训练 QUIZ 状态不允许 skip。"""
@@ -265,6 +306,29 @@ class TestInterviewFlow:
             await orch.run("answer", db=db, session_id=sid, answer="复盘后再答")
         # 幂等：再次 review 返回缓存报告
         assert (await orch.run("review", db=db, session_id=sid))["session_id"] == sid
+
+    async def test_review_disposition_distinguishes_failed_and_skipped(self, orch, db, seed_questions, fake_llm):
+        """答错与跳过同场：复盘去向如实——答错=已入待补答队列，跳过=判负不补答。"""
+        _set_score(fake_llm, 42)  # 低于及格线
+        sid, _ = await self._start_interview(orch, db, seed_questions, count=3)
+
+        await orch.run("answer", db=db, session_id=sid, answer="答一。")
+        await orch.run("skip", db=db, session_id=sid)
+        resp = await orch.run("answer", db=db, session_id=sid, answer="答三。")
+        assert resp["finished"] is True
+
+        review = await orch.run("review", db=db, session_id=sid)
+        skipped = [e for e in review["per_question"] if e["skipped"]]
+        failed = [e for e in review["per_question"] if not e["skipped"]]
+        assert len(skipped) == 1 and len(failed) == 2
+        assert all(e["disposition"] == "答错，已加入待补答队列" for e in failed)
+        assert skipped[0]["disposition"] == "跳过判负，不补答"
+        # 与队列事实一致：答错的在队列里，跳过的不在
+        retry_ids = _retry_ids(db)
+        assert {e["question_id"] for e in failed} <= retry_ids
+        assert skipped[0]["question_id"] not in retry_ids
+        # 报告级说明文案同时如实提及两种去向
+        assert "待补答队列" in review["retry_note"] and "不补答" in review["retry_note"]
 
     async def test_review_requires_finished_interview(self, orch, db, seed_questions):
         sid, _ = await self._start_interview(orch, db, seed_questions)

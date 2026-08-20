@@ -45,6 +45,7 @@ async function openNote(id) {
     title.value = n.title
     content.value = n.content
     saveState.value = ''
+    pendingSeq = savedSeq = 0   // 换篇后版本号归零，不携带上一篇的未存代际
     await nextTick()
     fitContent()
   } catch (e) {
@@ -81,18 +82,26 @@ async function removeNote() {
 }
 
 // ---- 自动保存：标题/正文变更后防抖 800ms 落盘 ----
+// 脏版本号方案：pendingSeq 单调递增记录编辑代际，savedSeq 记录已落盘代际；
+// 不用 saveState 字符串判断"是否有未存改动"，避免飞行中的旧响应把新编辑误判为已保存
 let saveTimer = null
+let pendingSeq = 0
+let savedSeq = 0
 watch([title, content], () => {
   if (!current.value || opening.value) return
+  pendingSeq++
   saveState.value = '保存中…'
   clearTimeout(saveTimer)
   saveTimer = setTimeout(flushSave, 800)
 })
 async function flushSave() {
   clearTimeout(saveTimer)
-  if (!current.value || saveState.value !== '保存中…') return
+  if (!current.value || pendingSeq === savedSeq) return
+  const seq = pendingSeq          // 本次请求保存的代际快照
   try {
     const n = await updateNote(current.value.id, { title: title.value, content: content.value })
+    if (seq < pendingSeq) return  // 飞行中又有新编辑：旧响应不得覆盖"保存中…"，等新防抖再存
+    savedSeq = seq
     current.value = n
     const t = new Date()
     saveState.value = `已保存 ${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`
@@ -100,7 +109,7 @@ async function flushSave() {
     const item = list.value.find(i => i.id === n.id)
     if (item) { item.title = n.title; item.excerpt = (n.content || '').replace(/\n/g, ' ').slice(0, 60) }
   } catch (e) {
-    saveState.value = '保存失败'
+    if (seq >= pendingSeq) saveState.value = '保存失败'   // 已有更新编辑时旧失败不盖状态
     console.warn('[notes] 自动保存失败：', e.message)
   }
 }

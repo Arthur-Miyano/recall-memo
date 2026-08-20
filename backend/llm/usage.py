@@ -40,8 +40,9 @@ PRICE_PER_1M: dict[str, dict[str, dict[str, float]]] = {
 # 未收录模型按 v4-flash 价估（当前主用模型）
 DEFAULT_PRICE = _DEEPSEEK_V4_FLASH
 
-# 套餐/会员额度的 Provider：额度无法按 token 折算单价，只记用量不计价
-UNPRICED_PROVIDERS = {"kimi"}
+# 不折算花费的 Provider：Kimi 是套餐/会员额度无法按 token 折算单价；
+# 智谱/豆包是单价未收录（避免瞎编），都只记 token 用量不计价
+UNPRICED_PROVIDERS = {"kimi", "zhipu", "doubao"}
 
 # 高峰时段（北京时间/本地时区的小时）：9-12 点、14-18 点
 _PEAK_HOURS = {9, 10, 11, 14, 15, 16, 17}
@@ -62,7 +63,7 @@ def estimate_cost(
 ) -> Optional[float]:
     """按单价表折算单次调用花费（元）。
 
-    返回 None 表示该 Provider 为套餐/会员额度（如 Kimi），不按量计价。
+    返回 None 表示该 Provider 不计价：套餐/会员额度（Kimi）或单价未收录（智谱/豆包）。
     """
     if provider in UNPRICED_PROVIDERS:
         return None

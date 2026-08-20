@@ -37,8 +37,17 @@ class AssistantAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     def log_answer(self, db: DBSession, session_id: int, question_id: int, user_answer: str) -> int:
-        """第一步：写入用户回答原文（不依赖评分结果，可与评分并行）。"""
-        record = Record(session_id=session_id, question_id=question_id, user_answer=user_answer)
+        """第一步：写入用户回答原文（不依赖评分结果，可与评分并行）。
+
+        该题在待补答队列中时，本次作答即补答（is_retry=True，每次入队只给一次补答机会）。
+        """
+        in_queue = db.exec(
+            select(RetryQueueItem).where(RetryQueueItem.question_id == question_id)
+        ).first() is not None
+        record = Record(
+            session_id=session_id, question_id=question_id, user_answer=user_answer,
+            is_retry=in_queue,
+        )
         db.add(record)
         db.commit()
         db.refresh(record)
@@ -59,15 +68,19 @@ class AssistantAgent(BaseAgent):
         # 总分低于阈值标记为需要补答/复习
         record.need_followup = (score.get("total") or 0.0) < SCORE_PASS_THRESHOLD
         db.add(record)
-        # 待补答队列：不及格入队，及格出队（记忆训练/面试共用此出口）
-        if record.need_followup:
+        # 待补答队列（记忆训练/面试共用此出口）：
+        # 补答记录的机会已消耗——无论及格与否都不再入队，若仍在队列则出队；
+        # 普通记录维持不及格入队、及格出队。
+        if record.is_retry:
+            self._dequeue_retry(db, record.question_id)
+        elif record.need_followup:
             self._enqueue_retry(db, record)
         else:
             self._dequeue_retry(db, record.question_id)
         self._bump_daily_stat(db, passed=(score.get("total") or 0.0) >= SCORE_PASS_THRESHOLD)
 
     def _enqueue_retry(self, db: DBSession, record: Record) -> None:
-        """答错（或跳过）的题进入待补答队列：已在队列中则只更新来源。"""
+        """不及格的题进入待补答队列：已在队列中则只更新来源。"""
         existing = db.exec(
             select(RetryQueueItem).where(RetryQueueItem.question_id == record.question_id)
         ).first()
@@ -91,7 +104,7 @@ class AssistantAgent(BaseAgent):
             db.commit()
 
     def log_skip(self, db: DBSession, session_id: int, question_id: int) -> int:
-        """面试跳过：记为失败（总分 0），不给补答机会（need_followup=False）。"""
+        """面试跳过：记为失败（总分 0），不给补答机会——need_followup=False 且不入待补答队列。"""
         record = Record(
             session_id=session_id,
             question_id=question_id,
@@ -103,8 +116,6 @@ class AssistantAgent(BaseAgent):
         db.add(record)
         db.commit()
         db.refresh(record)
-        # 跳过的题同样进待补答队列（判负，需在记忆训练中重背）
-        self._enqueue_retry(db, record)
         self._bump_daily_stat(db, passed=False)
         return record.id
 
@@ -198,10 +209,29 @@ class AssistantAgent(BaseAgent):
                 "score": score,
                 "record_id": item.get("record_id"),
             }
+            # 去向标注须与事实一致：答错的题已自动入待补答队列；跳过的题判负但不入队
+            if entry["skipped"]:
+                entry["disposition"] = "跳过判负，不补答"
+            elif score is not None and score.get("total", 0.0) < SCORE_PASS_THRESHOLD:
+                entry["disposition"] = "答错，已加入待补答队列"
+            else:
+                entry["disposition"] = "通过"
             per_question.append(entry)
-            # 答错/跳过的题已自动加入待补答队列（在记忆训练中优先重背，复盘报告只展示去向）
+            # retry_list 是报告展示用的"需重背"清单：答错的题已自动入待补答队列；跳过的题不入队，仅在此列出
             if entry["skipped"] or (score is not None and score.get("total", 0.0) < SCORE_PASS_THRESHOLD):
                 retry_list.append(question.id)
+
+        # 「错题去向」说明文案按本场实际情况生成（前端直接渲染，不写死）
+        has_failed = any(e["disposition"] == "答错，已加入待补答队列" for e in per_question)
+        has_skipped = any(e["skipped"] for e in per_question)
+        if has_failed and has_skipped:
+            retry_note = "答错的题已自动加入「记忆训练」待补答队列；跳过的题判负不补答，未入队"
+        elif has_failed:
+            retry_note = "已自动加入「记忆训练」待补答队列，复习巩固在那里完成"
+        elif has_skipped:
+            retry_note = "跳过的题判负不补答，未加入待补答队列"
+        else:
+            retry_note = "本场没有答错或跳过的题"
 
         analysis = await self._analyze_weakness(per_question)
         suggestions = self._build_suggestions(db, per_question)
@@ -216,6 +246,7 @@ class AssistantAgent(BaseAgent):
             "analysis": analysis,
             "suggestions": suggestions,
             "retry_list": retry_list,
+            "retry_note": retry_note,
         }
 
     async def _analyze_weakness(self, per_question: list[dict[str, Any]]) -> dict[str, Any]:

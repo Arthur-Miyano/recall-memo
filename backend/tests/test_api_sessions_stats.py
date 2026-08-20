@@ -95,9 +95,9 @@ class TestSessionsApi:
         assert review["avg_total"] == 70.0
         assert len(review["retry_list"]) == 1  # 跳过的那题
 
-        # 待补答队列接口
+        # 待补答队列接口：两题及格不入队，跳过的题不给补答也不入队
         queue = client.get("/api/sessions/retry-queue").json()
-        assert queue["count"] == 1
+        assert queue["count"] == 0
 
     def test_review_mode_requires_history(self, client):
         _import_questions(client, 3)

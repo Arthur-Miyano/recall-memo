@@ -24,7 +24,7 @@ class QuestionFocus(SQLModel, table=True):
 
 
 class RetryQueueItem(SQLModel, table=True):
-    """待补答队列表：面试/考核答错（或跳过）的题入队，记忆训练中答及格后出队。"""
+    """待补答队列表：面试/考核答错的题入队（跳过不入队），记忆训练中重背后出队（每题仅一次补答机会）。"""
 
     __tablename__ = "retry_queue"
 

@@ -6,7 +6,7 @@
 // 数据流（真实接口，失败回退 mock/review.js 并 console.warn）：
 //   GET /api/sessions/{id}/review   —— 面试结束跳来时按 session_id 取报告
 //   GET /api/sessions/latest-review —— 直接进入本页时取最近一次面试的报告
-//   「错题去向」只做展示：答错/跳过的题已自动加入记忆训练的待补答队列
+//   「错题去向」只做展示：答错的题已自动加入记忆训练的待补答队列；跳过的题不入队，仅在此列出
 // 动效：
 //   - 入场：纸张依次掉落（.screen.active .paper 的 drop 动画 + nth-child 延迟，纯 CSS）
 //   - 拖拽：pointer 事件拖动 .paper-head，位移限制在桌面范围内（与原型边界一致）
@@ -99,7 +99,8 @@ function toPapers(report) {
     no: 'FOLLOW-UP — 后续安排',
     title: '答错题目去向',
     retryQuestions: (report.retry_list || []).map(qid => shortStem(stemOf[qid] || `题 #${qid}`)),
-    note: '// 已自动加入「记忆训练」待补答队列，复习巩固在那里完成',
+    // 去向说明按后端数据如实展示（答错入队 / 跳过不入队）；旧缓存报告无此字段时回退通用文案
+    note: '// ' + (report.retry_note || '答错的题已加入「记忆训练」待补答队列，跳过的题判负不补答'),
     cta: '去记忆训练 →',
   })
   return out
@@ -171,7 +172,10 @@ function onZoomKey(e) {
   else if (e.key === 'ArrowRight') zoomNext()
 }
 onMounted(() => window.addEventListener('keydown', onZoomKey))
-onUnmounted(() => window.removeEventListener('keydown', onZoomKey))
+onUnmounted(() => {
+  window.removeEventListener('keydown', onZoomKey)
+  document.body.style.overflow = ''   // 弹窗开着时跳路由也要解锁背景滚动
+})
 // 放大时锁定背景滚动
 watch(zoomIdx, v => { document.body.style.overflow = v === null ? '' : 'hidden' })
 // 像素条：分数 → 10 格（向下取整，与原型静态格数一致：95→9 格、90→9 格）
@@ -232,7 +236,7 @@ function cells(v) { return Math.floor(v / 10) }
           <li v-for="w in p.weakPoints" :key="w">{{ w }}</li>
         </ul>
 
-        <!-- 答错题目去向（已进待补答队列，只做展示） -->
+        <!-- 答错/跳过题目去向（只做展示，说明文案来自后端 retry_note） -->
         <div class="retry-box" v-else-if="p.kind === 'followup'">
           <span class="tag" v-for="q in p.retryQuestions" :key="q">{{ q }}</span>
           <span class="iv-note">{{ p.note }}</span>

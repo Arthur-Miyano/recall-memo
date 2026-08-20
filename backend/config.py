@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     # LLM Provider API Keys（未配置则该 Provider 视为不可用）
     deepseek_api_key: str = ""
     kimi_api_key: str = ""
+    zhipu_api_key: str = ""
+    doubao_api_key: str = ""
 
     # Provider 优先级，逗号分隔，按顺序尝试
     llm_provider_priority: str = "deepseek,kimi"

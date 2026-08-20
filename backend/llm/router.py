@@ -7,19 +7,25 @@ from config import settings
 from .base import BaseLLMClient
 from .deepseek import DeepSeekClient
 from .kimi import KimiClient
+from .zhipu import ZhipuClient
+from .doubao import DoubaoClient
 
 logger = logging.getLogger(__name__)
 
-# Provider 注册表：新增 Provider（如 Zhipu/Doubao）时实现 BaseLLMClient 并在此注册即可
+# Provider 注册表：新增 Provider 时实现 BaseLLMClient 并在此注册即可
 PROVIDER_REGISTRY: dict[str, Type[BaseLLMClient]] = {
     "deepseek": DeepSeekClient,
     "kimi": KimiClient,
+    "zhipu": ZhipuClient,
+    "doubao": DoubaoClient,
 }
 
 # 各 Provider 的 api key 从 settings 哪个字段读取
 PROVIDER_KEY_ATTR: dict[str, str] = {
     "deepseek": "deepseek_api_key",
     "kimi": "kimi_api_key",
+    "zhipu": "zhipu_api_key",
+    "doubao": "doubao_api_key",
 }
 
 # 各 Provider 的 api key 对应的环境变量名（= settings 字段名大写）

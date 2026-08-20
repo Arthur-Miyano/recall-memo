@@ -10,17 +10,19 @@ import { dashboard } from '../mock/dashboard'
 import { getLlmSettings, postLlmSettings, importDatabase } from '../api'
 
 const s = dashboard.settings
-// Provider 展示名 ↔ 后端 key（智谱/豆包未接入，置灰）
+// Provider 展示名 ↔ 后端 key（key 为 null 表示未接入，按钮置灰）
 const PROVIDERS = [
   { label: 'DEEPSEEK', key: 'deepseek' },
   { label: 'KIMI', key: 'kimi' },
-  { label: '智谱', key: null },
-  { label: '豆包', key: null },
+  { label: '智谱', key: 'zhipu' },
+  { label: '豆包', key: 'doubao' },
 ]
-// 各 Provider 的常用模型建议（datalist 提示，仍可自由输入其他型号）
+// 各 Provider 的常用模型建议（datalist 提示，仍可自由输入其他型号/接入点 ID）
 const MODEL_SUGGESTIONS = {
   deepseek: ['deepseek-v4-flash', 'deepseek-v4-pro'],
   kimi: ['moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k'],
+  zhipu: ['glm-4.7-flash', 'glm-4.5-flash'],
+  doubao: ['doubao-seed-2-0-mini-260428', 'doubao-seed-1-6-flash-250828'],
 }
 const providerOn = ref(s.providerOn)
 const model = ref(s.model)

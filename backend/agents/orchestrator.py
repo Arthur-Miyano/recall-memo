@@ -8,6 +8,7 @@ from typing import Any, Optional
 
 from sqlmodel import Session as DBSession, select
 
+import events
 from database import engine
 from llm import llm_router
 from models import Question, Record, RetryQueueItem, Session
@@ -150,6 +151,7 @@ class OrchestratorAgent(BaseAgent):
         mode = session.mode
         # 策略 Agent 抽题期间，活跃 Agent 记为"策略"
         self._transition(db, session, SessionState.IDLE, self.strategy.name)
+        events.publish(self.strategy.name, "抽题中…")
         if mode == "review":
             # 回忆模式：只抽历史记录中出现过的题，按到期度排序
             questions = self.strategy.select_review_questions(db, count=count)
@@ -183,6 +185,7 @@ class OrchestratorAgent(BaseAgent):
     ) -> dict[str, Any]:
         """面试模拟入口：混合结构抽题（追问链 + 独立单题）→ 直接出第一题。"""
         self._transition(db, session, SessionState.INTERVIEW_SELECT, self.strategy.name)
+        events.publish(self.strategy.name, "抽题中…")
         plan, followup = self.strategy.select_interview_plan(db, tech_stack=tech_stack, count=count)
         if not plan:
             raise StateError("题库为空或该技术栈下没有题目，请先导入题库")
@@ -232,6 +235,7 @@ class OrchestratorAgent(BaseAgent):
         question = db.get(Question, quiz_order[0])
         # 面试官 Agent 生成第一题变体题干
         self._transition(db, session, quiz_state, self.interviewer.name)
+        events.publish(self.interviewer.name, "出题中…")
         variant = await self.interviewer.run(question, db)
         self._store_variant(db, session, question.id, variant)
 
@@ -282,6 +286,7 @@ class OrchestratorAgent(BaseAgent):
         # 评分 Agent 评分 与 智能助理写入回答原文 并行（文档 3.2）
         # with_annotation=False：即时反馈不展示标注版答案，省掉"逐字复制标答"的输出 token
         self._transition(db, session, quiz_state, self.grader.name)
+        events.publish(self.grader.name, "判分中…")
         score, record_id = await asyncio.gather(
             self.grader.run(question, answer, with_annotation=False),
             self.assistant.run(db, session_id=session.id, question_id=question.id, user_answer=answer),
@@ -338,6 +343,7 @@ class OrchestratorAgent(BaseAgent):
 
         # 面试官 Agent 生成变体题干（INTERVIEW_ASK）
         self._transition(db, session, SessionState.INTERVIEW_ASK, self.interviewer.name)
+        events.publish(self.interviewer.name, "提问中…")
         variant = await self.interviewer.run(question, db)
         self._store_variant(db, session, question.id, variant)
 
@@ -378,6 +384,7 @@ class OrchestratorAgent(BaseAgent):
 
         # 评分 Agent 与智能助理写库并行（INTERVIEW_SCORE，结果不透露给用户）
         self._transition(db, session, SessionState.INTERVIEW_SCORE, self.grader.name)
+        events.publish(self.grader.name, "判分中…")
         score, record_id = await asyncio.gather(
             self.grader.run(question, answer),
             self.assistant.run(db, session_id=session.id, question_id=question.id, user_answer=answer),
@@ -441,6 +448,7 @@ class OrchestratorAgent(BaseAgent):
             payload["next_question"] = next_payload
         else:
             self._transition(db, session, SessionState.INTERVIEW_REVIEW, self.assistant.name)
+            events.publish(self.assistant.name, "生成复盘报告…")
             report = await self.assistant.build_review_report(db, session)
             self._save_context(db, session, review_report=report)
             payload["finished"] = True

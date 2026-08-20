@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from api import assistant, bank, datamove, health, home, llm, notes, sessions, settings, stats
+from api import assistant, bank, datamove, events as events_api, health, home, llm, notes, sessions, settings, stats
 from database import init_db
 
 
@@ -40,6 +40,7 @@ app.include_router(settings.router, prefix="/api")
 app.include_router(datamove.router, prefix="/api")
 app.include_router(assistant.router, prefix="/api")
 app.include_router(notes.router, prefix="/api")
+app.include_router(events_api.router, prefix="/api")
 
 # 生产模式：托管前端构建产物（frontend/dist），SPA 路由回退到 index.html
 # 开发模式不存在 dist 时跳过，走 Vite dev server + /api 代理

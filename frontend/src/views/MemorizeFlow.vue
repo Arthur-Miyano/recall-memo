@@ -220,7 +220,10 @@ function onZoomKey(e) {
   else if (e.key === 'ArrowRight') zoomNext()
 }
 onMounted(() => window.addEventListener('keydown', onZoomKey))
-onUnmounted(() => window.removeEventListener('keydown', onZoomKey))
+onUnmounted(() => {
+  window.removeEventListener('keydown', onZoomKey)
+  document.body.style.overflow = ''   // 弹窗开着时跳路由也要解锁背景滚动
+})
 // 放大时锁定背景滚动
 watch(zoomIdx, v => { document.body.style.overflow = v === null ? '' : 'hidden' })
 

@@ -109,7 +109,7 @@ async def review_report(session_id: int, db: DBSession = Depends(get_db)):
 
 @router.get("/retry-queue")
 def retry_queue(db: DBSession = Depends(get_db)):
-    """待补答队列：面试/考核答错（或跳过）的题，在记忆训练中优先重背，答及格后出队。"""
+    """待补答队列：面试/考核答错的题，在记忆训练中优先重背，重背后出队（每题仅一次补答机会；跳过不入队）。"""
     items = db.exec(select(RetryQueueItem).order_by(RetryQueueItem.created_at)).all()
     return {
         "count": len(items),

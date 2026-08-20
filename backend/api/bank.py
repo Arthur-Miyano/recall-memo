@@ -14,6 +14,7 @@ from agents import importer
 from agents.base import SCORE_PASS_THRESHOLD
 from api.deps import get_db
 import database
+import events
 from models import Question, QuestionFocus, QuestionGroup, Record, RetryQueueItem, Session
 
 router = APIRouter(prefix="/bank", tags=["bank"])
@@ -603,6 +604,8 @@ async def _run_import_job(
                     job["stage"] = stage
                     job["stage_done"] = done
                     job["stage_total"] = total
+                    # 顺手广播到 SSE：前端可见"录入 Agent：LLM 提取真问题 3/10"
+                    events.publish("录入", f"{name} · {stage} {done}/{total}")
 
                 r = await _run_import(text, dedupe, db, None, force, progress=_progress)
                 r["file"] = name
@@ -613,9 +616,11 @@ async def _run_import_job(
         job["result"] = {"files": results, "totals": totals, "file_errors": file_errors}
         job["status"] = "done"
         job["stage"] = "完成"
+        events.publish("录入", "录入完成")
     except Exception as exc:  # 任务级失败：置 error，前端轮询可见
         job["status"] = "error"
         job["error"] = str(exc)
+        events.publish("录入", "录入失败")
     finally:
         job["finished_at"] = time.time()
 

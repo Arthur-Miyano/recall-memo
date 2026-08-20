@@ -4,7 +4,7 @@
 // 数据流（真实接口，失败回退 mock/interview.js 并 console.warn）：
 //   POST /api/sessions {mode: interview}   —— 抽题并直接返回第一题（含追问标识/出题时间）
 //   POST /api/sessions/{id}/answer         —— 只回执「已记录」，评分留待终局复盘
-//   POST /api/sessions/{id}/skip           —— 跳过判负并进待补答队列
+//   POST /api/sessions/{id}/skip           —— 跳过判负，不给补答、不进待补答队列
 //   全部答完 → 复盘页 /review
 // 动效：
 //   - 倒计时每秒递减，顶部细线宽度同步；归零时显示「已超时」
@@ -127,7 +127,7 @@ async function submit() {
   }
 }
 
-// 跳过本题：判负并进待补答队列
+// 跳过本题：判负（不给补答、不进待补答队列）
 async function skip() {
   if (useMock.value) { recorded.value = true; return }
   busy.value = '记录中…'

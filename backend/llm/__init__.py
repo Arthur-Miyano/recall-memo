@@ -3,6 +3,11 @@
 from .base import BaseLLMClient
 from .deepseek import DeepSeekClient
 from .kimi import KimiClient
+from .zhipu import ZhipuClient
+from .doubao import DoubaoClient
 from .router import LLMRouter, llm_router
 
-__all__ = ["BaseLLMClient", "DeepSeekClient", "KimiClient", "LLMRouter", "llm_router"]
+__all__ = [
+    "BaseLLMClient", "DeepSeekClient", "KimiClient", "ZhipuClient", "DoubaoClient",
+    "LLMRouter", "llm_router",
+]

@@ -86,6 +86,8 @@ pip install -r requirements.txt
 ```ini
 DEEPSEEK_API_KEY=sk-...   # 必填：出题 / 判分 / 助理对话
 KIMI_API_KEY=sk-...       # 可选：备用 Provider，DeepSeek 不可用时自动切换
+# ZHIPU_API_KEY=...       # 可选：智谱（bigmodel.cn），想用就在设置面板里切
+# DOUBAO_API_KEY=...      # 可选：豆包（火山方舟），模型名可填 ep- 开头的推理接入点 ID
 ```
 
 ```bash

@@ -22,6 +22,7 @@ from sqlmodel import Session as DBSession, select
 
 from agents.base import SCORE_PASS_THRESHOLD
 from api.deps import get_db
+import events
 from llm import llm_router
 from llm.router import LLMProviderUnavailableError
 from models import ChatMessage, ChatSession, DailyStat, Question, QuestionFocus, Record, RetryQueueItem
@@ -241,6 +242,7 @@ async def assistant_chat(req: ChatRequest, db: DBSession = Depends(get_db)):
         "重点/规划咨询" if req.quick in ("focus", "plan") else "自由问答"
     )
     thinking = [f"总控 Agent：解析意图 → {intent}"]
+    events.publish("智能助理", "对话中…")
     profile, steps = _collect_profile(db)
     thinking += steps
 
@@ -262,6 +264,7 @@ async def assistant_chat(req: ChatRequest, db: DBSession = Depends(get_db)):
         )
     sess = _resolve_session(db, req.session_id)
     _save_chat(db, sess, message, reply, thinking)
+    events.publish("智能助理", "答复完成")
     return {"thinking": thinking, "reply": reply, "action": action, "session_id": sess.id}
 
 
