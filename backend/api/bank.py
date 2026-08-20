@@ -234,6 +234,16 @@ class QuestionPatchRequest(BaseModel):
     tags: Optional[list[str]] = None
 
 
+def _find_duplicate(stem: str, candidates: list[str]) -> tuple[Optional[str], float]:
+    """在候选题干里找最相似的一条。纯 CPU 计算，由调用方放进工作线程执行。"""
+    best_stem, best_sim = None, 0.0
+    for other in candidates:
+        sim = importer.stem_similarity(stem, other)
+        if sim > best_sim:
+            best_stem, best_sim = other, sim
+    return best_stem, best_sim
+
+
 @router.patch("/questions/{question_id}")
 def bank_patch_question(question_id: int, req: QuestionPatchRequest, db: DBSession = Depends(get_db)):
     """改题：改技术栈 + 改内容（题干/答案/难度/关键词/标签），返回更新后的完整题目。
@@ -425,11 +435,11 @@ async def _run_import(text: str, dedupe: bool, db: DBSession,
         if not it.get("tech_stack"):
             it["tech_stack"] = stack  # LLM 也没给出分类时兜底 other（不进任何技术栈分组）
         if dedupe:
-            best_stem, best_sim = None, 0.0
-            for other in existing_stems + accepted_stems:
-                sim = importer.stem_similarity(it["stem"], other)
-                if sim > best_sim:
-                    best_stem, best_sim = other, sim
+            # 相似度判重是 O(题库规模 × 导入量) 的纯 CPU 计算，放进工作线程——
+            # 否则大文档导入期间事件循环被占满，其他请求（如用量面板）会整体卡住
+            best_stem, best_sim = await asyncio.to_thread(
+                _find_duplicate, it["stem"], existing_stems + accepted_stems
+            )
             if best_sim >= importer.SIMILARITY_THRESHOLD:
                 result["skipped"].append({
                     "title": title,
@@ -588,7 +598,8 @@ async def _run_import_job(
             pending.append(("粘贴文本", text_input, False))
         for name, raw in sources:
             try:
-                text, force = _decode_source_text(name, raw)
+                # PDF 解析同样是 CPU 活，放工作线程，避免导入期间卡死其他请求
+                text, force = await asyncio.to_thread(_decode_source_text, name, raw)
                 pending.append((name, text, force))
             except HTTPException as exc:
                 file_errors.append({"file": name, "reason": str(exc.detail)})
