@@ -9,13 +9,12 @@ import time
 import uuid
 from typing import Any, Callable, Optional
 
-from fastapi import HTTPException
 from sqlmodel import Session as DBSession, select
 
 import database
 import events
 from agents import importer
-from infrastructure.documents import decode_source_text
+from infrastructure.documents import DocumentParseError, decode_source_text
 from models import Question
 
 
@@ -213,8 +212,8 @@ async def run_import_job(
                 # PDF 解析同样是 CPU 活，放工作线程，避免导入期间卡死其他请求
                 text, force = await asyncio.to_thread(decode_source_text, name, raw)
                 pending.append((name, text, force))
-            except HTTPException as exc:
-                file_errors.append({"file": name, "reason": str(exc.detail)})
+            except DocumentParseError as exc:
+                file_errors.append({"file": name, "reason": str(exc)})
         job["file_count"] = len(pending)
 
         results: list[dict[str, Any]] = []

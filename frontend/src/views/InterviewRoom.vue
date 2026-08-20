@@ -14,6 +14,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { interviewSession as iv } from '../mock/interview'
 import { createSession, submitAnswer, skipQuestion } from '../api'
 import { useSessionStore } from '../stores/session'
+import { interviewSeconds, interviewTimedOut } from '../utils/interviewTimer'
 
 const route = useRoute()
 const router = useRouter()
@@ -35,7 +36,7 @@ const recorded = ref(false)      // 是否已提交（显示已记录印章）
 const busy = ref('')
 const lastPayload = ref(null)    // 最近一次 answer/skip 的回执（含 next_question / finished）
 let askedAt = null               // 当前题出题时间（ISO 串）
-let startedAt = null             // 用户开始作答时间
+const startedAt = ref(null)      // 用户开始作答时间；必须响应式，超时 computed 才会立即刷新
 let timer = null
 
 // 倒计时文字：m:ss；归零显示「已超时」
@@ -47,7 +48,7 @@ const timerText = computed(() => {
 // 顶部细线宽度：剩余 / 总限时
 const lineWidth = computed(() => (sec.value / TOTAL_SEC * 100) + '%')
 // 超时只约束「开始作答」：检测到输入后不限时，不再判超时（需求：2 分钟内必须开始）
-const over = computed(() => !startedAt && sec.value <= 0)
+const over = computed(() => interviewTimedOut({ startedAt: startedAt.value, seconds: sec.value }))
 
 // 剩余秒数：以 asked_at 为基准（无 asked_at 的 mock 态用演示值）
 function resetTimer(q) {
@@ -69,19 +70,19 @@ function applyQuestion(q) {
   recorded.value = false
   answerText.value = ''
   if (answerEl.value) answerEl.value.style.height = ''   // 答题框高度复位
-  startedAt = null
+  startedAt.value = null
   resetTimer(q)
 }
 
 onMounted(async () => {
   timer = setInterval(() => {
-    if (startedAt) return   // 已开始作答：不限时，倒计时冻结，不再走向「已超时」
-    if (askedAt) {
-      const elapsed = (Date.now() - new Date(askedAt).getTime()) / 1000
-      sec.value = Math.max(0, Math.round(TOTAL_SEC - elapsed))
-    } else {
-      sec.value = Math.max(0, sec.value - 1)
-    }
+    sec.value = interviewSeconds({
+      startedAt: startedAt.value,
+      askedAt,
+      now: Date.now(),
+      currentSeconds: sec.value,
+      totalSeconds: TOTAL_SEC,
+    })
   }, 1000)
   const stack = typeof route.query.stack === 'string' ? route.query.stack : null
   const count = Number(route.query.count) || 4
@@ -106,7 +107,7 @@ onUnmounted(() => clearInterval(timer))
 
 // 首次输入视为开始作答（时间压力检测）；答题框随内容自动撑高
 function onInput(e) {
-  if (!startedAt) startedAt = new Date().toISOString()
+  if (!startedAt.value) startedAt.value = new Date().toISOString()
   const el = e.target
   el.style.height = 'auto'
   el.style.height = Math.max(260, el.scrollHeight) + 'px'
@@ -119,7 +120,7 @@ async function submit() {
   if (!text) return
   busy.value = '记录中…'
   try {
-    lastPayload.value = await submitAnswer(sessionId.value, text, startedAt)
+    lastPayload.value = await submitAnswer(sessionId.value, text, startedAt.value)
     recorded.value = true
   } catch (e) {
     console.warn('[interview] answer 失败：', e.message)

@@ -2,28 +2,30 @@
 """文档解析 adapter：上传文件 → 纯文本。
 
 .pdf 用 pypdf 逐页提取；.md/.txt/.json 按 UTF-8 解码。
-解析失败统一抛 HTTPException 400（调用方即 HTTP 层，直接透传给客户端）。
+解析失败统一抛 DocumentParseError，由 HTTP adapter 映射为 400。
 """
 import io
 import os
-
-from fastapi import HTTPException
 
 # 按文本读取的扩展名；.pdf 走 pypdf 提取
 TEXT_EXTS = {".md", ".txt", ".json"}
 
 
+class DocumentParseError(ValueError):
+    """上传文档无法解析；不携带任何 HTTP 传输层语义。"""
+
+
 def extract_pdf_text(raw: bytes) -> str:
-    """pypdf 提取 PDF 全文（逐页拼接）。失败/无文本抛 HTTPException 400。"""
+    """pypdf 提取 PDF 全文（逐页拼接）。失败/无文本抛 DocumentParseError。"""
     from pypdf import PdfReader  # 延迟导入：PDF 是可选路径，不影响文本导入
     try:
         reader = PdfReader(io.BytesIO(raw))
         pages = [(page.extract_text() or "") for page in reader.pages]
     except Exception as exc:  # 损坏/加密/非 PDF 内容等统一归为无法解析
-        raise HTTPException(status_code=400, detail=f"PDF 解析失败：{exc}")
+        raise DocumentParseError(f"PDF 解析失败：{exc}") from exc
     text = "\n\n".join(p for p in pages if p.strip())
     if not text.strip():
-        raise HTTPException(status_code=400, detail="PDF 中未提取到文本（可能是扫描件或图片型 PDF）")
+        raise DocumentParseError("PDF 中未提取到文本（可能是扫描件或图片型 PDF）")
     return text
 
 
@@ -40,8 +42,7 @@ def decode_source_text(filename: str, raw: bytes) -> tuple[str, bool]:
         try:
             return raw.decode("utf-8"), False
         except UnicodeDecodeError:
-            raise HTTPException(status_code=400, detail=f"{filename}：文本解码失败（请使用 UTF-8 编码）")
-    raise HTTPException(
-        status_code=400,
-        detail=f"{filename}：不支持的文件类型 {ext or '（无扩展名）'}，仅支持 .pdf / .md / .txt / .json",
+            raise DocumentParseError(f"{filename}：文本解码失败（请使用 UTF-8 编码）")
+    raise DocumentParseError(
+        f"{filename}：不支持的文件类型 {ext or '（无扩展名）'}，仅支持 .pdf / .md / .txt / .json"
     )

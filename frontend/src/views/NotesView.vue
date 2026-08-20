@@ -10,6 +10,7 @@
 // 片段约定：背诵页划句右键收藏的内容以 "> 句子\n—— 来源题干" 引用块追加在文末
 import { ref, watch, onMounted, nextTick } from 'vue'
 import { getNotes, createNote, getNote, updateNote, deleteNote } from '../api'
+import { createSaveCoordinator } from '../utils/saveCoordinator'
 
 const list = ref([])            // 摘要列表
 const current = ref(null)       // 当前打开的全文 {id, title, content, ...}
@@ -37,7 +38,7 @@ onMounted(loadList)
 const opening = ref(false)
 async function openNote(id) {
   if (opening.value || current.value?.id === id) return
-  await flushSave()             // 切换前把上一篇的未存改动落盘
+  if (!await flushSave()) return // 切换前等待整条保存链；失败则留在当前笔记
   opening.value = true
   try {
     const n = await getNote(id)
@@ -45,7 +46,6 @@ async function openNote(id) {
     title.value = n.title
     content.value = n.content
     saveState.value = ''
-    pendingSeq = savedSeq = 0   // 换篇后版本号归零，不携带上一篇的未存代际
     await nextTick()
     fitContent()
   } catch (e) {
@@ -82,43 +82,37 @@ async function removeNote() {
 }
 
 // ---- 自动保存：标题/正文变更后防抖 800ms 落盘 ----
-// 脏版本号 + 串行化方案：pendingSeq 单调递增记录编辑代际，savedSeq 记录已落盘代际；
-// saving 保证同一笔记同时只有一个在途 PUT——飞行中的新编辑只加代际不发请求，
-// 当前请求完成后发现 pendingSeq > savedSeq 再补一次保存。
-// 这样服务端永远按编辑顺序落库，乱序响应也无法把旧内容盖回数据库。
+// coordinator 合并飞行期间的新编辑并串行写入；flush 会等待整条保存链，
+// 因此切换笔记不会与旧 PUT 串线。失败后保留草稿但停止自动重试。
 let saveTimer = null
-let pendingSeq = 0
-let savedSeq = 0
-let saving = false
+const saveCoordinator = createSaveCoordinator((id, payload) => updateNote(id, payload))
 watch([title, content], () => {
   if (!current.value || opening.value) return
-  pendingSeq++
+  saveCoordinator.markDirty(current.value.id, { title: title.value, content: content.value })
   saveState.value = '保存中…'
   clearTimeout(saveTimer)
   saveTimer = setTimeout(flushSave, 800)
 })
 async function flushSave() {
   clearTimeout(saveTimer)
-  if (!current.value || pendingSeq === savedSeq || saving) return
-  const seq = pendingSeq          // 本次请求保存的代际快照
-  saving = true
-  try {
-    const n = await updateNote(current.value.id, { title: title.value, content: content.value })
-    if (seq < pendingSeq) return  // 飞行中又有新编辑：旧响应不得覆盖"保存中…"，由 finally 补存
-    savedSeq = seq
+  if (!current.value) return true
+  const outcome = await saveCoordinator.flush()
+  if (!outcome.ok) {
+    saveState.value = '保存失败'
+    console.warn('[notes] 自动保存失败：', outcome.error.message)
+    return false
+  }
+  const saved = outcome.saved
+  if (saved && current.value?.id === saved.noteId) {
+    const n = saved.result
     current.value = n
     const t = new Date()
     saveState.value = `已保存 ${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`
     // 同步列表摘要（标题/节选可能变了），不重排选中态
     const item = list.value.find(i => i.id === n.id)
     if (item) { item.title = n.title; item.excerpt = (n.content || '').replace(/\n/g, ' ').slice(0, 60) }
-  } catch (e) {
-    if (seq >= pendingSeq) saveState.value = '保存失败'   // 已有更新编辑时旧失败不盖状态
-    console.warn('[notes] 自动保存失败：', e.message)
-  } finally {
-    saving = false
-    if (pendingSeq > savedSeq) flushSave()   // 飞行期间产生的新编辑：串行补存
   }
+  return true
 }
 
 // ---- 正文框随内容撑高 ----

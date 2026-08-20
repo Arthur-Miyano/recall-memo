@@ -155,7 +155,9 @@ data/       SQLite 库和题库源文件（本地数据，不进 git）
 docs/       需求文档、方案设计、页面截图
 ```
 
-后端测试：`cd backend && pytest tests/ -q`（323 项，带覆盖率门禁：生产代码行覆盖率 ≥ 90%）
+后端测试：`cd backend && pytest tests/ -q`（325 项，带覆盖率门禁：生产代码行覆盖率 ≥ 90%）
+
+前端测试：`cd frontend && npm test`（保存队列与面试倒计时的行为回归测试）
 
 ## 备注
 

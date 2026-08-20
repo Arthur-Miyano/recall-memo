@@ -16,7 +16,7 @@ from agents import importer
 from agents.base import SCORE_PASS_THRESHOLD
 from api.deps import get_db
 from application.importer import IMPORT_JOBS, job_view, new_job, run_import, run_import_job
-from infrastructure.documents import decode_source_text
+from infrastructure.documents import DocumentParseError, decode_source_text
 from models import Question, QuestionFocus, QuestionGroup, Record, RetryQueueItem, Session
 
 router = APIRouter(prefix="/bank", tags=["bank"])
@@ -358,7 +358,10 @@ async def bank_import_file(
     raw = await file.read()
     if not raw:
         raise HTTPException(status_code=400, detail="文件为空")
-    text, force_pdf = await asyncio.to_thread(decode_source_text, file.filename or "", raw)
+    try:
+        text, force_pdf = await asyncio.to_thread(decode_source_text, file.filename or "", raw)
+    except DocumentParseError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     force = force_llm_extract or force_pdf
     return await run_import(text, dedupe, db, max_questions, force)
 

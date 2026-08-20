@@ -8,13 +8,23 @@
 """
 import asyncio
 from pathlib import Path
+import time
 
+import pytest
+
+from application import importer as import_app
 from infrastructure import documents
+from infrastructure.documents import DocumentParseError
 
 FIXTURE_PDF = (Path(__file__).parent / "fixtures" / "sample.pdf").read_bytes()
 
 
 class TestImportFile:
+    def test_document_adapter_uses_transport_neutral_error(self):
+        """文档 adapter 不得把 FastAPI HTTPException 泄漏到 application seam。"""
+        with pytest.raises(DocumentParseError):
+            documents.decode_source_text("broken.pdf", b"%PDF-1.4 garbage")
+
     def test_pdf_real_parse_and_import(self, client, fake_llm):
         """真实 PDF 上传：pypdf 提取文本 → 强制走 LLM 提取真问题 → 入库。"""
         fake_llm.pdf_items = [
@@ -109,3 +119,24 @@ class TestImportJobsPdf:
         assert j["result"]["file_errors"] == []
         assert j["result"]["files"][0]["file"] == "sample.pdf"
         assert any("提取真正的面试题" in c for c in fake_llm.calls)
+
+    async def test_background_document_parsing_keeps_event_loop_responsive(self, test_engine, monkeypatch):
+        """后台解析慢文档时，事件循环仍能按时调度其他请求/任务。"""
+        real_decode = import_app.decode_source_text
+
+        def slow_decode(filename, raw):
+            time.sleep(0.4)
+            return real_decode(filename, raw)
+
+        monkeypatch.setattr(import_app, "decode_source_text", slow_decode)
+        job = import_app.new_job("sample.pdf")
+        task = asyncio.create_task(import_app.run_import_job(
+            job, [("sample.pdf", FIXTURE_PDF)], None, True,
+        ))
+
+        started = time.perf_counter()
+        await asyncio.sleep(0.02)
+        elapsed = time.perf_counter() - started
+        assert elapsed < 0.25, "文档解析占用了事件循环线程"
+        await task
+        assert job["status"] == "done"
