@@ -7,7 +7,7 @@
 //   POST /api/sessions/{id}/skip           —— 跳过判负，不给补答、不进待补答队列
 //   全部答完 → 复盘页 /review
 // 动效：
-//   - 倒计时每秒递减，顶部细线宽度同步；归零时显示「已超时」
+//   - 倒计时每秒递减，顶部细线宽度同步；限时只约束「开始作答」，检测到输入即冻结，未开始且归零才显示「已超时」
 //   - 提交后答案区隐藏，已记录面板 screenIn + 印章 stampIn 盖下
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -46,7 +46,8 @@ const timerText = computed(() => {
 })
 // 顶部细线宽度：剩余 / 总限时
 const lineWidth = computed(() => (sec.value / TOTAL_SEC * 100) + '%')
-const over = computed(() => sec.value <= 0)
+// 超时只约束「开始作答」：检测到输入后不限时，不再判超时（需求：2 分钟内必须开始）
+const over = computed(() => !startedAt && sec.value <= 0)
 
 // 剩余秒数：以 asked_at 为基准（无 asked_at 的 mock 态用演示值）
 function resetTimer(q) {
@@ -74,6 +75,7 @@ function applyQuestion(q) {
 
 onMounted(async () => {
   timer = setInterval(() => {
+    if (startedAt) return   // 已开始作答：不限时，倒计时冻结，不再走向「已超时」
     if (askedAt) {
       const elapsed = (Date.now() - new Date(askedAt).getTime()) / 1000
       sec.value = Math.max(0, Math.round(TOTAL_SEC - elapsed))

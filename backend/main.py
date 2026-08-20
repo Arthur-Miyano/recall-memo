@@ -45,8 +45,17 @@ app.include_router(events_api.router, prefix="/api")
 # 生产模式：托管前端构建产物（frontend/dist），SPA 路由回退到 index.html
 # 开发模式不存在 dist 时跳过，走 Vite dev server + /api 代理
 DIST_DIR = Path(__file__).resolve().parent.parent / "frontend" / "dist"
-if DIST_DIR.is_dir():
-    assets_dir = DIST_DIR / "assets"
+
+
+def mount_spa(app: FastAPI, dist_dir: Path) -> bool:
+    """把 dist 挂到 app 上：assets 静态目录 + SPA 回退。dist 不存在则不动，返回是否已挂载。
+
+    独立成函数是为了让测试能用临时目录构造最小 dist，
+    不依赖真实前端构建产物（frontend/dist 被 gitignore，全新环境下安全用例不能整组跳过）。
+    """
+    if not dist_dir.is_dir():
+        return False
+    assets_dir = dist_dir / "assets"
     if assets_dir.is_dir():
         app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
 
@@ -56,7 +65,12 @@ if DIST_DIR.is_dir():
         if full_path.startswith("api/") or full_path == "api":
             raise HTTPException(status_code=404, detail="Not Found")
         # 静态文件原样返回；路径必须解析后仍落在 dist 内（防 ../ 穿越读到 .env 等文件）
-        candidate = (DIST_DIR / full_path).resolve()
-        if full_path and candidate.is_relative_to(DIST_DIR) and candidate.is_file():
+        candidate = (dist_dir / full_path).resolve()
+        if full_path and candidate.is_relative_to(dist_dir) and candidate.is_file():
             return FileResponse(candidate)
-        return FileResponse(DIST_DIR / "index.html")
+        return FileResponse(dist_dir / "index.html")
+
+    return True
+
+
+mount_spa(app, DIST_DIR)

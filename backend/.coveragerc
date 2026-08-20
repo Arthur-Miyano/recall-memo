@@ -1,0 +1,9 @@
+# 覆盖率门禁：只统计生产代码（测试自身不计入，避免高覆盖假象）
+[run]
+omit =
+    tests/*
+    scripts/*
+    .venv/*
+
+[report]
+show_missing = true

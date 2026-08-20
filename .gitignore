@@ -11,3 +11,4 @@ data/backup*/
 .DS_Store
 .tmp/
 .pytest-tmp/
+.coverage

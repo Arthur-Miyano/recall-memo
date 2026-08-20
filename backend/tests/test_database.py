@@ -3,7 +3,7 @@
 
 - expire_stale_sessions：昨天及更早的进行中会话 -> EXPIRED；今天的保留；终态（IDLE/INTERVIEW_REVIEW/EXPIRED）不动；
 - ensure_indexes：幂等，重复调用不报错，索引真实存在；
-- backfill_retry_queue：按每题最新记录重建队列（不及格/跳过入队，及格出队）。
+- backfill_retry_queue：按每题最新记录重建队列（不及格入队，及格/跳过出队——跳过判负不给补答）。
 """
 from datetime import datetime, timedelta, timezone
 
@@ -92,7 +92,7 @@ class TestEnsureIndexes:
 
 class TestBackfillRetryQueue:
     def test_rebuild_from_latest_records(self, test_engine):
-        """按每题最新一条记录重建队列：最新不及格/跳过入队，最新及格出队。"""
+        """按每题最新一条记录重建队列：最新不及格入队，最新及格/跳过出队。"""
         from models import Question
 
         with DBSession(test_engine) as db:
@@ -113,7 +113,7 @@ class TestBackfillRetryQueue:
             # q2：最新记录及格 -> 不在队列
             db.add(Record(session_id=1, question_id=q2.id, score_total=30.0))
             db.add(Record(session_id=1, question_id=q2.id, score_total=85.0))
-            # q3：最新记录被跳过 -> 应在队列
+            # q3：最新记录被跳过 -> 跳过判负不给补答，不应在队列
             db.add(Record(session_id=1, question_id=q3.id, score_total=0.0, skipped=True))
             # 队列里已有一条 q2 的旧记录（历史遗留），backfill 应把它删掉
             db.add(RetryQueueItem(question_id=q2.id, source="old"))
@@ -122,4 +122,25 @@ class TestBackfillRetryQueue:
             database.backfill_retry_queue()
 
             queue_ids = {i.question_id for i in db.exec(select(RetryQueueItem)).all()}
-            assert queue_ids == {q1.id, q3.id}
+            assert queue_ids == {q1.id}
+
+    def test_skipped_not_requeued_after_restart(self, test_engine):
+        """回归：跳过题在重启回填后不得重新入队（需求：跳过判负，不给补答）。
+
+        跳过记录的 score_total=0.0，回填必须先排除 skipped 再比较分数，
+        否则 0 分会被误判为不及格而重新入队。
+        """
+        from models import Question
+
+        with DBSession(test_engine) as db:
+            q = Question(stem="被跳过的题？", answer="答案", tech_stack="python")
+            db.add(q)
+            db.commit()
+            db.refresh(q)
+            db.add(Record(session_id=1, question_id=q.id, score_total=0.0, skipped=True))
+            db.commit()
+
+            database.backfill_retry_queue()  # 模拟重启
+
+            queue_ids = {i.question_id for i in db.exec(select(RetryQueueItem)).all()}
+            assert queue_ids == set(), "跳过题重启后不得重新进入待补答队列"

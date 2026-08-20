@@ -149,13 +149,13 @@ DeepSeek 目前有两种模型：DeepSeek V4 flash 和 DeepSeek V4 PRO。推荐�
 ## 目录
 
 ```
-backend/    FastAPI 应用（api 路由 / agents / llm 封装 / models / tests）
+backend/    FastAPI 应用（api 路由 / agents / application 用例 / infrastructure 适配 / llm 封装 / models / tests）
 frontend/   Vue 3 单页应用（views / components / api / mock 演示数据）
 data/       SQLite 库和题库源文件（本地数据，不进 git）
 docs/       需求文档、方案设计、页面截图
 ```
 
-后端测试：`cd backend && pytest tests/ -q`（286 项）
+后端测试：`cd backend && pytest tests/ -q`（323 项，带覆盖率门禁：生产代码行覆盖率 ≥ 90%）
 
 ## 备注
 

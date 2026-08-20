@@ -82,11 +82,14 @@ async function removeNote() {
 }
 
 // ---- 自动保存：标题/正文变更后防抖 800ms 落盘 ----
-// 脏版本号方案：pendingSeq 单调递增记录编辑代际，savedSeq 记录已落盘代际；
-// 不用 saveState 字符串判断"是否有未存改动"，避免飞行中的旧响应把新编辑误判为已保存
+// 脏版本号 + 串行化方案：pendingSeq 单调递增记录编辑代际，savedSeq 记录已落盘代际；
+// saving 保证同一笔记同时只有一个在途 PUT——飞行中的新编辑只加代际不发请求，
+// 当前请求完成后发现 pendingSeq > savedSeq 再补一次保存。
+// 这样服务端永远按编辑顺序落库，乱序响应也无法把旧内容盖回数据库。
 let saveTimer = null
 let pendingSeq = 0
 let savedSeq = 0
+let saving = false
 watch([title, content], () => {
   if (!current.value || opening.value) return
   pendingSeq++
@@ -96,11 +99,12 @@ watch([title, content], () => {
 })
 async function flushSave() {
   clearTimeout(saveTimer)
-  if (!current.value || pendingSeq === savedSeq) return
+  if (!current.value || pendingSeq === savedSeq || saving) return
   const seq = pendingSeq          // 本次请求保存的代际快照
+  saving = true
   try {
     const n = await updateNote(current.value.id, { title: title.value, content: content.value })
-    if (seq < pendingSeq) return  // 飞行中又有新编辑：旧响应不得覆盖"保存中…"，等新防抖再存
+    if (seq < pendingSeq) return  // 飞行中又有新编辑：旧响应不得覆盖"保存中…"，由 finally 补存
     savedSeq = seq
     current.value = n
     const t = new Date()
@@ -111,6 +115,9 @@ async function flushSave() {
   } catch (e) {
     if (seq >= pendingSeq) saveState.value = '保存失败'   // 已有更新编辑时旧失败不盖状态
     console.warn('[notes] 自动保存失败：', e.message)
+  } finally {
+    saving = false
+    if (pendingSeq > savedSeq) flushSave()   // 飞行期间产生的新编辑：串行补存
   }
 }
 

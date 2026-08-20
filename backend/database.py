@@ -129,7 +129,8 @@ def migrate_llm_usage_status_columns() -> None:
 def backfill_retry_queue() -> None:
     """按每题最新一条记录重建待补答队列（兼容建表前的老数据）。
 
-    规则与运行时一致：最新记录不及格或被跳过 → 在队列；最新记录及格 → 不在队列。
+    规则与运行时一致：最新记录不及格 → 在队列；最新记录及格或被跳过 → 不在队列。
+    注意跳过的记录 score_total=0.0，必须先看 skipped 再看分数，否则 0 分会被误判为不及格。
     """
     from sqlmodel import Session as DBSession, select
 
@@ -143,7 +144,7 @@ def backfill_retry_queue() -> None:
             latest[r.question_id] = r
         existing = {i.question_id: i for i in db.exec(select(RetryQueueItem)).all()}
         for qid, r in latest.items():
-            failed = r.skipped or (r.score_total is not None and r.score_total < SCORE_PASS_THRESHOLD)
+            failed = (not r.skipped) and (r.score_total is not None and r.score_total < SCORE_PASS_THRESHOLD)
             if failed and qid not in existing:
                 db.add(RetryQueueItem(question_id=qid, source="backfill"))
             elif not failed and qid in existing:
