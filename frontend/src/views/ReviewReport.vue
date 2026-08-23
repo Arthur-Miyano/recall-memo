@@ -111,9 +111,11 @@ onMounted(async () => {
     const sid = route.query.session_id || null
     const report = sid ? await getReview(sid) : await getLatestReview()
     fileNo.value = `INTERVIEW REPORT — FILE №${new Date().toISOString().slice(0, 10).replaceAll('-', '')}-${String(report.session_id).padStart(2, '0')}`
+    const scored = (report.per_question || []).map(q => q.score).find(s => s && s.provider)
+    const providerInfo = scored ? ` · 评分 ${scored.provider}${scored.model ? '/' + scored.model : ''}` : ''
     meta.value = [
       `场次：${STACK_LABEL[report.tech_stack] || report.tech_stack} ${report.question_count} 题 · 平均 ${report.avg_total ?? '—'} 分`,
-      `${new Date().toLocaleDateString('zh-CN')} — 面试官 AGENT / 评分 AGENT 联署`,
+      `${new Date().toLocaleDateString('zh-CN')} — 面试官 AGENT / 评分 AGENT 联署${providerInfo} · AI 评分仅供训练参考（准确性50% 逻辑30% 自然度20%）`,
     ]
     papers.value = toPapers(report)
     poses.splice(0, poses.length, ...papers.value.map(() => null))

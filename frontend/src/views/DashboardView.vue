@@ -15,174 +15,44 @@
 // 录入题库：ImportPanel → POST /api/bank/import，入库成功后重拉卡片数据
 // 图表说明：折线与知识图谱为手绘 SVG（图纸感直角转折、像素方块节点），
 //   有意不用 ECharts —— 像素美学是设计的一部分
+// 结构：卡片数据加载在 composables/useDashboardData.js；图表数据映射纯函数在 utils/dashboardMapping.js
 import { ref, computed, onMounted, watch } from 'vue'
 import SettingsPanel from '../components/SettingsPanel.vue'
 import DashboardModal from '../components/DashboardModal.vue'
 import ImportPanel from '../components/ImportPanel.vue'
 import InkCalendar from '../components/InkCalendar.vue'
-import { dashboard as mockDb } from '../mock/dashboard'
-import { getStatsOverview, getStatsDaily, getBankOverview, getLlmUsage, offline } from '../api'
+import { getStatsDaily, getBankOverview, getLlmUsage, offline } from '../api'
 import {
   getStatsDailyDetail, getStatsPerQuestion, getRetryQueue, postAssistantPlan,
 } from '../api/bank'
+import { useDashboardData } from '../composables/useDashboardData'
+import {
+  buildStrip28, kgLabel, CELL2NODE, STATUS_CN, makeBars, fmtInt, fmtBig,
+  axisX, axisY, stepPath, sortPerQRows, defaultKgStack,
+} from '../utils/dashboardMapping'
 import '../styles/dashboard.css'
 
-// 整体数据：先渲染 mock 骨架，真实数据到位后逐块替换
-// 日历字段统一为 InkCalendar 的 items 结构 [{date, total_count}]；
-// mock 兜底时把 28 个等级数字映射为最近 28 天的日期，保证结构一致
-const db = ref({ ...mockDb, calendar: mockCalItems() })
-
-// 本地日期 → 'YYYY-MM-DD'（与后端 daily 接口口径一致）
-function fmtDate(d) {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-}
-function mockCalItems() {
-  return mockDb.calendar.map((v, i) => {
-    const d = new Date()
-    d.setDate(d.getDate() - (27 - i))
-    return { date: fmtDate(d), total_count: v }
-  })
-}
-
-// 小卡片方格条：最近 28 天（2 行 × 14 列），格内显示日号，今天印章红框
-const strip28 = computed(() => {
-  const countMap = Object.fromEntries((db.value.calendar || []).map(c => [c.date, c.total_count]))
-  const days = []
-  for (let i = 27; i >= 0; i--) {
-    const d = new Date()
-    d.setDate(d.getDate() - i)
-    const date = fmtDate(d)
-    const count = countMap[date] || 0
-    days.push({
-      date,
-      dayNum: d.getDate(),
-      label: `${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`,
-      level: Math.min(count, 4),
-      isToday: i === 0,
-      tip: `${d.getMonth() + 1}月${d.getDate()}日 · ${count} 题`,
-    })
-  }
-  return days
-})
-
-const WEEKDAYS_CN = ['日', '一', '二', '三', '四', '五', '六']
-// cell.status → 图谱节点状态
-const CELL2NODE = { done: 'mastered', weak: 'weak', todo: 'todo' }
-// 同知识点多题时的序号角标（①~⑳，超出兜底 ·n）
-const CIRCLED = ['①','②','③','④','⑤','⑥','⑦','⑧','⑨','⑩','⑪','⑫','⑬','⑭','⑮','⑯','⑰','⑱','⑲','⑳']
-// 图谱节点主标签：知识点（分组名），>8 字截断加 …；同知识点多题加圈号序号
-function kgLabel(groupName, idx, count) {
-  const base = groupName.length > 8 ? groupName.slice(0, 8) + '…' : groupName
-  if (count <= 1) return base
-  return `${base} ${idx <= 20 ? CIRCLED[idx - 1] : '·' + idx}`
-}
-
-// 卡片数据加载（首屏 + 录入成功后刷新共用）
-async function loadDashboard() {
-  try {
-    const [ov, daily90, daily7, bank, usage] = await Promise.all([
-      getStatsOverview(), getStatsDaily(90), getStatsDaily(7), getBankOverview(), getLlmUsage(30),
-    ])
-    // 连续打卡：从今天往前数有答题的天数
-    let streak = 0
-    for (let i = daily7.items.length - 1; i >= 0; i--) {
-      if (daily7.items[i].total_count > 0) streak++
-      else break
-    }
-    db.value = {
-      headMeta: [
-        `已覆盖 ${ov.covered} / ${ov.total_questions} 题 · 连续打卡 ${streak} 天`,
-        `数据截至 ${new Date().toLocaleDateString('zh-CN')}`,
-      ],
-      // 月历热力：一次拉 90 天，InkCalendar 前端按月切换；等级逻辑在组件内（0~4 级）
-      calendar: daily90.items,
-      trend: {
-        values: daily7.items.map(d => d.total_count),
-        days: daily7.items.map(d => WEEKDAYS_CN[new Date(d.date + 'T00:00:00').getDay()]),
-        max: Math.max(...daily7.items.map(d => d.total_count), 1),
-      },
-      accuracy: Object.entries(ov.per_stack).map(([name, s]) => ({
-        name: name.toUpperCase(),
-        pct: s.pass_rate == null ? 0 : Math.round(s.pass_rate * 100),
-      })),
-      stackOv: buildStackOverview(bank),
-      suggestions: buildSuggestions(bank),
-      usage,                              // API 消耗：totals + 30 天 daily + models
-      settings: mockDb.settings, // 设置面板自行请求真实接口，这里仅占位
-    }
-  } catch (e) {
-    console.warn('[dashboard] 统计数据获取失败，回退 mock 数据：', e.message)
-  }
-}
+// 卡片数据：mock 骨架先行，真实数据到位后逐块替换
+const { db, loadDashboard } = useDashboardData()
 onMounted(loadDashboard)
 // 后端恢复（offline 摘标）后重载真实数据：mock 骨架只兜底展示，不当用户数据继续用（§8.2）
 watch(offline, (v, prev) => { if (prev && !v) loadDashboard() })
 
-// 知识图谱小卡片（概览态）：不画节点图，每栈只统计 掌握/薄弱/未背 计数 + 完成比例
-function buildStackOverview(bank) {
-  return (bank.stacks || []).map(s => {
-    let done = 0, weak = 0, todo = 0
-    s.groups.forEach(g => g.cells.forEach(c => {
-      if (c.status === 'done') done++
-      else if (c.status === 'weak') weak++
-      else todo++
-    }))
-    const total = s.total || done + weak + todo
-    return { key: s.key || s.name, label: s.name.toUpperCase(), done, weak, todo, total }
-  })
-}
-
-// 今日建议：薄弱（待补答/低分）优先，取前 3
-function buildSuggestions(bank) {
-  const weak = []
-  bank.stacks.forEach(s => s.groups.forEach(g => g.cells.forEach(c => {
-    if (c.status === 'weak') {
-      weak.push({
-        d: c.retry ? '待补答' : '低分',
-        t: c.tip.split(' · ')[0],
-        s: c.score == null ? '—' : String(c.score),
-      })
-    }
-  })))
-  weak.sort((a, b) => Number(a.s) - Number(b.s))
-  return weak.slice(0, 3)
-}
+// 小卡片方格条：最近 28 天（2 行 × 14 列），格内显示日号，今天印章红框
+const strip28 = computed(() => buildStrip28(db.value.calendar))
 
 // ---- 7 天趋势折线（SVG 手绘，坐标换算与原型一致） ----
 const W = 560, H = 160, pad = 28
-const px = i => pad + i * (W - pad * 2) / 6
-const py = v => H - pad - v * (H - pad * 2) / db.value.trend.max
+const px = i => axisX(i, W, pad, 6)
+const py = v => axisY(v, db.value.trend.max, H, pad)
 // 阶梯折线：先水平后垂直的直角转折
-const trendPath = computed(() => {
-  const vals = db.value.trend.values
-  let d = `M ${px(0)} ${py(vals[0])}`
-  for (let i = 1; i < vals.length; i++) d += ` H ${px(i)} V ${py(vals[i])}`
-  return d
-})
+const trendPath = computed(() => stepPath(db.value.trend.values, db.value.trend.max, W, H, pad, 6))
 const gridLines = computed(() => Array.from({ length: db.value.trend.max + 1 }, (_, g) => g))
 
 // 正确率像素柱：pct → 10 格
 function accCells(p) { return Math.round(p / 10) }
 
 // ---- API 消耗（LLM 用量）：柱状图 ----
-// 通用柱条换算：items → 等宽柱（key 为数值字段），柱高 ∝ 数值
-function makeBars(items, key, W, H, pad, bw) {
-  if (!items.length) return { bars: [], max: 0 }
-  const max = Math.max(...items.map(d => d[key]), 1e-9)
-  const slot = (W - pad * 2) / items.length
-  return {
-    max,
-    bars: items.map((d, i) => ({
-      x: pad + i * slot + (slot - bw) / 2,
-      y: H - pad - (d[key] / max) * (H - pad * 2),
-      h: (d[key] / max) * (H - pad * 2),
-      v: d[key], date: d.date, i,
-    })),
-  }
-}
-// 数值格式化：千分位整数 / 大额缩写（1.2k / 3.4M）
-const fmtInt = n => Number(n || 0).toLocaleString('en-US')
-const fmtBig = v => (v >= 1e6 ? (v / 1e6).toFixed(1) + 'M' : v >= 1e3 ? (v / 1e3).toFixed(1) + 'k' : String(Math.round(v * 100) / 100))
 const UW = 560, UH = 120, upad = 28
 // 小卡片：近 30 天花费柱状
 const usageBars = computed(() => makeBars(db.value.usage?.daily || [], 'cost', UW, UH, upad, 10))
@@ -246,20 +116,14 @@ const calDetailMap = computed(() =>
 
 // ---- 放大 · 30 天趋势：成功（墨实线）/ 失败（红虚线）双色阶梯折线 ----
 const TW = 920, TH = 220, tpad = 30
-const tpx = i => tpad + i * (TW - tpad * 2) / 29
+const tpx = i => axisX(i, TW, tpad, 29)
 const trend30Max = computed(() => {
   const items = modalData.value?.daily.items || []
   return Math.max(...items.map(d => Math.max(d.success_count, d.fail_count)), 1)
 })
-const tpy = v => TH - tpad - v * (TH - tpad * 2) / trend30Max.value
-function stepPath(vals) {
-  if (!vals.length) return ''
-  let d = `M ${tpx(0)} ${tpy(vals[0])}`
-  for (let i = 1; i < vals.length; i++) d += ` H ${tpx(i)} V ${tpy(vals[i])}`
-  return d
-}
-const okPath = computed(() => stepPath((modalData.value?.daily.items || []).map(d => d.success_count)))
-const failPath = computed(() => stepPath((modalData.value?.daily.items || []).map(d => d.fail_count)))
+const tpy = v => axisY(v, trend30Max.value, TH, tpad)
+const okPath = computed(() => stepPath((modalData.value?.daily.items || []).map(d => d.success_count), trend30Max.value, TW, TH, tpad, 29))
+const failPath = computed(() => stepPath((modalData.value?.daily.items || []).map(d => d.fail_count), trend30Max.value, TW, TH, tpad, 29))
 const trend30Grid = computed(() => Array.from({ length: trend30Max.value + 1 }, (_, g) => g))
 
 // ---- 放大 · API 消耗：花费/请求/Tokens 三指标切换柱状图 + 按模型明细 ----
@@ -279,14 +143,7 @@ function usageAxisFmt(v) {
 }
 
 // ---- 放大 · 正确率：逐题明细按技术栈分组排序，未背的排最后 ----
-const STATUS_ORDER = { weak: 0, done: 1, todo: 2 }
-const perQRows = computed(() => {
-  const items = [...(modalData.value?.perQ.items || [])]
-  return items.sort((a, b) =>
-    a.tech_stack.localeCompare(b.tech_stack) || STATUS_ORDER[a.status] - STATUS_ORDER[b.status]
-  )
-})
-const STATUS_CN = { done: '掌握', weak: '薄弱', todo: '未背' }
+const perQRows = computed(() => sortPerQRows(modalData.value?.perQ.items))
 
 // ---- 放大 · 知识图谱：一次一个技术栈（Tab 切换）+ 纸墨 3D ----
 // 大画布只画当前栈：根节点居中 + 题目节点网格排布；节点主标签为知识点（分组名），
@@ -299,12 +156,7 @@ const kgTabs = computed(() =>
     key: s.key, label: s.name.toUpperCase(), done: s.done, total: s.total,
   }))
 )
-// 默认选中「掌握数最少」的栈：图谱放大用于定位短板，先落在最弱的栈上；并列则取第一个
-function defaultKgStack(bank) {
-  const stacks = bank?.stacks || []
-  if (!stacks.length) return ''
-  return stacks.reduce((a, b) => (b.done < a.done ? b : a)).key
-}
+// 默认落在掌握最少的栈（定位短板），defaultKgStack 见 utils/dashboardMapping.js
 function switchKgStack(key) {
   if (kgStackKey.value === key) return
   kgStackKey.value = key

@@ -23,6 +23,7 @@ from sqlmodel import Session as DBSession, select
 from agents.base import SCORE_PASS_THRESHOLD
 from agents.outputs import AssistantAction
 from api.deps import get_db
+from application.oplog import log_operation
 import events
 from llm import llm_router
 from models import ChatMessage, ChatSession, DailyStat, Question, QuestionFocus, Record, RetryQueueItem
@@ -240,6 +241,13 @@ async def assistant_chat(req: ChatRequest, db: DBSession = Depends(get_db)):
             "待用户在前端确认后执行"
         )
     sess = _resolve_session(db, req.session_id)
+    if action is not None:
+        # 操作日志（§11）：助理动作提议落审计（执行走题库接口，另有 delete/edit/migrate 日志）。
+        # 只记类型与 id 列表；summary 为 LLM 生成的一句话说明，截断 100 字
+        log_operation(db, "assistant_action_proposed", action["type"], {
+            "question_ids": action["question_ids"],
+            "summary": (action.get("summary") or "")[:100],
+        })
     _save_chat(db, sess, message, reply, thinking)
     events.publish("智能助理", "答复完成")
     return {"thinking": thinking, "reply": reply, "action": action, "session_id": sess.id}

@@ -99,7 +99,7 @@ class GraderAgent(BaseAgent):
             {"role": "user", "content": user_prompt},
         ]
         # 输出校验（修复方案 §4.3）：解析不出得分字段 → 受控重试一次，仍失败抛 LLMOutputValidationError
-        _, content = await self.llm.chat(messages, temperature=0.2)
+        provider, content = await self.llm.chat(messages, temperature=0.2)
         parsed = parse_json_object(content, log_label="评分")
         if not has_score_fields(parsed):
             logger.warning("评分输出未包含得分字段，受控重试一次")
@@ -110,7 +110,7 @@ class GraderAgent(BaseAgent):
                     "等字段的 JSON 对象，不要输出任何其他文字。"
                 )},
             ]
-            _, content = await self.llm.chat(retry_messages, temperature=0.2)
+            provider, content = await self.llm.chat(retry_messages, temperature=0.2)
             parsed = parse_json_object(content, log_label="评分重试")
             if not has_score_fields(parsed):
                 raise LLMOutputValidationError("评分输出经一次重试后仍无法解析")
@@ -127,6 +127,10 @@ class GraderAgent(BaseAgent):
             accuracy * WEIGHT_ACCURACY + logic * WEIGHT_LOGIC + naturalness * WEIGHT_NATURALNESS,
             1,
         )
+        # 实际 Provider/模型（§11）：经 router 取对应客户端的模型名；fake/自定义 LLM 无 get_client 时为 None
+        get_client = getattr(self.llm, "get_client", None)
+        client = get_client(provider) if callable(get_client) else None
+        model = getattr(client, "model", None)
         return {
             "accuracy": accuracy,
             "logic": logic,
@@ -136,6 +140,8 @@ class GraderAgent(BaseAgent):
             "similarity": round(ratio, 4),
             "missed_points": score_out.missed_points,
             "comment": score_out.comment,
+            "provider": provider,
+            "model": model,
             # 标注版标准答案：校验标记配对与原文一致后才采用，否则降级 None（前端不标注）
             "annotated_answer": self._validate_annotated(score_out.annotated_answer, question.answer),
         }

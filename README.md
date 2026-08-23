@@ -15,13 +15,13 @@
 
 ![首页](docs/screenshots/01-home.png)
 
-首页三个入口：记忆训练、面试模拟、回忆模式（按遗忘规律挑出快忘的题）。
+首页三个入口：记忆训练、面试模拟、回忆模式（按到期度挑出快忘的题：距上次出现越久、历史得分越低的越优先）。
 选好技术栈和题量就可以开始。
 
 ![记忆训练](docs/screenshots/02-memorize.png)
 
 记忆训练先给题干和标准答案，确认记好了以后打乱顺序开考，题干会换成面试官口吻的说法。
-每答一题立刻出分，分准确性、逻辑、自然度三个维度。
+每答一题立刻出分，分准确性、逻辑、自然度三个维度（AI 评分仅供训练参考，界面会标注实际 Provider/模型）。
 如果回答和标准答案逐字重合度太高，会被判成背诵痕迹，自然度直接压低。
 
 ![面试模拟](docs/screenshots/07-interview.png)
@@ -121,6 +121,20 @@ DeepSeek 目前有两种模型：DeepSeek V4 flash 和 DeepSeek V4 PRO。推荐�
 > Key 只保存在本机 `.env`，接口只返回掩码，不写日志、不进 localStorage。
 > `.env` 已在 `.gitignore` 里，但自己注意不要截图外发。
 
+## 本地模式与边界
+
+本工具定位是**本机单用户**使用，当前已实现：
+
+- 后端只监听本机回环地址（127.0.0.1），并校验请求的 Host/Origin；
+- 启动时生成本地随机令牌，写操作（删题、迁移、导入、设置等）要求带本地令牌头；
+- 删除题目、批量迁移、助理提议的动作都会写入操作日志（操作类型、目标、时间、request_id），可在数据库 `operation_logs` 表追溯；
+- 请求、会话操作和 LLM 调用日志用 request_id 贯通，日志不记录完整 Prompt、API Key、用户回答或导入文档；
+- 响应带基础安全头（CSP、nosniff 等），API Key 只返回掩码。
+
+**未来云端/多用户能力**（当前未实现，见 `docs/云端多用户与小程序方案.md`）：
+认证与授权、用户数据隔离、CSRF 防护、审计日志等需要上云时另行补齐，
+届时不要把本服务直接暴露到公网。
+
 ## 升级与数据迁移
 
 所有数据都在 `data/bagu.db` 这一个文件里，`data/` 已在 `.gitignore`，
@@ -144,7 +158,7 @@ DeepSeek 目前有两种模型：DeepSeek V4 flash 和 DeepSeek V4 PRO。推荐�
 
 - 后端：FastAPI + SQLModel（SQLite），6 个 Agent 分工（总控 / 面试官 / 评分 / 策略 / 助理 / 录入清洗）
 - 前端：Vue 3 + Vite，无 UI 框架，图表手绘 SVG
-- LLM：DeepSeek / Kimi 双 Provider，失败自动切换
+- LLM：DeepSeek / Kimi / 智谱 / 豆包 多 Provider，失败自动切换
 
 ## 目录
 
@@ -155,9 +169,9 @@ data/       SQLite 库和题库源文件（本地数据，不进 git）
 docs/       需求文档、方案设计、页面截图
 ```
 
-后端测试：`cd backend && pytest tests/ -q`（325 项，带覆盖率门禁：生产代码行覆盖率 ≥ 90%）
+后端测试：`cd backend && pytest tests/ -q`（459 项，带覆盖率门禁：生产代码行覆盖率 ≥ 90%）
 
-前端测试：`cd frontend && npm test`（保存队列与面试倒计时的行为回归测试）
+前端测试：`cd frontend && npm test`（35 项：保存队列与面试倒计时的行为回归测试）
 
 ## 备注
 

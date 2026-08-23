@@ -5,6 +5,7 @@ import logging
 from typing import Any, Optional, Type
 
 from config import settings
+from infrastructure.requestctx import current_request_id
 from .base import BaseLLMClient
 from .deepseek import DeepSeekClient
 from .errors import LLMError, LLMRateLimitError, LLMTemporaryError, LLMTimeoutError
@@ -102,15 +103,18 @@ class LLMRouter:
                 exc = LLMTimeoutError(f"Provider {client.name} 调用超出统一截止时间")
                 if attempt >= MAX_RETRY_PER_PROVIDER:
                     raise exc
-                logger.warning("Provider %s 调用超时，重试第 %s 次", client.name, attempt + 1)
+                logger.warning(
+                    "Provider %s 调用超时，重试第 %s 次 request_id=%s",
+                    client.name, attempt + 1, current_request_id(),
+                )
             except _SWITCHABLE_ERRORS as exc:
                 if attempt >= MAX_RETRY_PER_PROVIDER:
                     raise
                 if isinstance(exc, LLMRateLimitError):
                     await asyncio.sleep(RATE_LIMIT_BACKOFF)  # 限流：退避后再重试
                 logger.warning(
-                    "Provider %s 调用失败（%s），重试第 %s 次",
-                    client.name, type(exc).__name__, attempt + 1,
+                    "Provider %s 调用失败（%s），重试第 %s 次 request_id=%s",
+                    client.name, type(exc).__name__, attempt + 1, current_request_id(),
                 )
         raise LLMTimeoutError(f"Provider {client.name} 调用超出统一截止时间")  # pragma: no cover
 
@@ -134,6 +138,10 @@ class LLMRouter:
             if not client.available:
                 raise LLMProviderUnavailableError(f"Provider {provider} 未配置 API Key，不可用")
             content = await self._call_with_retry(client, messages, deadline, **kwargs)
+            logger.info(
+                "LLM 调用成功 provider=%s model=%s request_id=%s",
+                provider, client.model, current_request_id(),
+            )
             return provider, content
 
         errors: list[str] = []
@@ -145,10 +153,17 @@ class LLMRouter:
             tried = True
             try:
                 content = await self._call_with_retry(client, messages, deadline, **kwargs)
+                logger.info(
+                    "LLM 调用成功 provider=%s model=%s request_id=%s",
+                    name, client.model, current_request_id(),
+                )
                 return name, content
             except _SWITCHABLE_ERRORS as exc:
                 # 日志只记错误类型名，不含 Provider 原始异常文本（脱敏）
-                logger.warning("Provider %s 调用失败（%s），切换到下一个", name, type(exc).__name__)
+                logger.warning(
+                    "Provider %s 调用失败（%s），切换到下一个 request_id=%s",
+                    name, type(exc).__name__, current_request_id(),
+                )
                 errors.append(f"{name}: {type(exc).__name__}")
 
         if not tried:

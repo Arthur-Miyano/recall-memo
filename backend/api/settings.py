@@ -7,6 +7,9 @@
 - 本模块不记录任何含 Key 的日志，异常信息也不携带 Key。
 """
 import os
+import tempfile
+import threading
+import time
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
@@ -30,24 +33,56 @@ def _mask(key: str) -> Optional[str]:
     return f"{key[:3]}••••{key[-4:]}"
 
 
+# 同进程写锁（§10）：多线程并发保存设置时 .env 读写串行化
+_ENV_LOCK = threading.Lock()
+
+
 def _write_env(updates: dict[str, str]) -> None:
-    """把 KEY=VALUE 写入项目根 .env：已存在的行原位替换，其余行原样保留。"""
-    lines: list[str] = []
-    if ENV_PATH.exists():
-        lines = ENV_PATH.read_text(encoding="utf-8").splitlines()
-    remaining = dict(updates)
-    out: list[str] = []
-    for line in lines:
-        stripped = line.strip()
-        if stripped and not stripped.startswith("#") and "=" in stripped:
-            name = stripped.split("=", 1)[0].strip()
-            if name in remaining:
-                out.append(f"{name}={remaining.pop(name)}")
-                continue
-        out.append(line)
-    for name, value in remaining.items():
-        out.append(f"{name}={value}")
-    ENV_PATH.write_text("\n".join(out) + "\n", encoding="utf-8")
+    """把 KEY=VALUE 写入项目根 .env：已存在的行原位替换，其余行原样保留。
+
+    原子写入（§10）：先写同目录临时文件再 os.replace——崩溃/失败时 .env 要么旧要么新，
+    绝不撕裂；临时文件失败即删，不留半截。同进程并发由 _ENV_LOCK 串行化。
+    """
+    with _ENV_LOCK:
+        lines: list[str] = []
+        if ENV_PATH.exists():
+            lines = ENV_PATH.read_text(encoding="utf-8").splitlines()
+        remaining = dict(updates)
+        out: list[str] = []
+        for line in lines:
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#") and "=" in stripped:
+                name = stripped.split("=", 1)[0].strip()
+                if name in remaining:
+                    out.append(f"{name}={remaining.pop(name)}")
+                    continue
+            out.append(line)
+        for name, value in remaining.items():
+            out.append(f"{name}={value}")
+        content = "\n".join(out) + "\n"
+        fd, tmp_name = tempfile.mkstemp(dir=ENV_PATH.parent, prefix=".env.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+                f.write(content)
+            _replace(tmp_name, ENV_PATH)
+        except BaseException:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
+
+
+def _replace(src: str, dst) -> None:
+    """os.replace 的 Windows 兜底：杀软/索引器短暂占用目标时会偶发 PermissionError，短暂重试。"""
+    for attempt in range(5):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if attempt == 4:
+                raise
+            time.sleep(0.01)
 
 
 def _current_payload() -> dict:

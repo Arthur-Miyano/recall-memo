@@ -283,14 +283,15 @@ class TestApiErrorContract:
 
 
 # ---------------------------------------------------------------------------
-# Orchestrator：error_code 按异常类型映射（不解析字符串）
+# OperationCoordinator：error_code 按异常类型映射（不解析字符串）
 # ---------------------------------------------------------------------------
 
 class TestClassifyOperationError:
     def test_maps_by_exception_type(self):
-        from agents.orchestrator import OrchestratorAgent, StateError
+        from application.operation_coordinator import OperationCoordinator
+        from application.session_workflow import StateError
 
-        classify = OrchestratorAgent._classify_operation_error
+        classify = OperationCoordinator.classify_operation_error
         assert classify(StateError("状态非法")) == "STATE_ERROR"
         assert classify(LLMTimeoutError("x")) == "LLM_TIMEOUT"
         assert classify(LLMRateLimitError("x")) == "LLM_RATE_LIMITED"

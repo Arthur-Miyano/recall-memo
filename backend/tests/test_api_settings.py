@@ -116,6 +116,58 @@ class TestLlmSettingsPost:
         assert "DEEPSEEK_API_KEY=sk-olddeepseekkey123456" in content
 
 
+class TestEnvAtomicWrite:
+    """.env 原子写入 + 同进程写锁（§10）：并发不撕裂，失败不留半截。"""
+
+    def test_concurrent_writes_no_tearing(self, isolated_settings):
+        import re
+        import threading
+
+        from api.settings import _write_env
+
+        def worker(i: int) -> None:
+            for j in range(50):
+                _write_env({f"TK{i}": f"v{i}-{j}-" + "x" * 100})
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        lines = isolated_settings.read_text(encoding="utf-8").splitlines()
+        seen = set()
+        for line in lines:
+            if not line.strip() or line.startswith("#"):
+                continue
+            name, sep, value = line.partition("=")
+            assert sep, f"撕裂行（缺 =）：{line!r}"
+            if name.startswith("TK"):
+                seen.add(name)
+                i = int(name[2:])
+                assert re.fullmatch(rf"v{i}-\d+-x{{100}}", value), f"撕裂行（值不完整）：{line!r}"
+        assert seen == {f"TK{i}" for i in range(8)}
+        # 原有行未受损
+        assert "OTHER_LINE=保留我" in lines
+        assert "# 注释行" in lines
+
+    def test_failure_leaves_original_and_no_temp_file(self, isolated_settings, monkeypatch):
+        import os as os_mod
+
+        from api import settings as settings_api
+
+        original = isolated_settings.read_text(encoding="utf-8")
+
+        def boom(*args):
+            raise OSError("模拟替换失败")
+
+        monkeypatch.setattr(os_mod, "replace", boom)
+        with pytest.raises(OSError, match="模拟替换失败"):
+            settings_api._write_env({"NEW_KEY": "v"})
+        assert isolated_settings.read_text(encoding="utf-8") == original
+        assert not list(isolated_settings.parent.glob(".env.*.tmp")), "失败后残留临时文件"
+
+
 class TestRouterModelOverride:
     """llm_model 只覆盖优先级第一的默认 Provider（模型名是 Provider 私有的）。"""
 

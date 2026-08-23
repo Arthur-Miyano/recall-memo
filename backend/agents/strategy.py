@@ -3,7 +3,7 @@
 
 - 记忆训练：新题优先，其次历史表现差的题；
 - 面试模拟：混合结构抽题（追问链 + 独立单题），带"连续成功短期排除"规则；
-- 回忆模式：只抽已出现过的题，按"到期度"（简易艾宾浩斯）排序。
+- 回忆模式：只抽已出现过的题，按"到期度"排序（基于时间、历史得分和连续成功次数的简化排序，非遗忘曲线算法）。
 """
 import random
 from datetime import datetime, timezone
@@ -20,7 +20,7 @@ from .base import BaseAgent, SCORE_PASS_THRESHOLD, consecutive_success
 EXCLUSION_CONSECUTIVE_SUCCESS = 3
 EXCLUSION_WINDOW_DAYS = 7
 
-# 回忆模式到期度公式（简易艾宾浩斯，可解释）：
+# 回忆模式到期度公式（简化可解释排序，非 SM-2/FSRS 等遗忘曲线算法）：
 #   到期度 = 距上次出现天数 × (1 - 历史平均得分/100) ÷ (1 + 连续成功降权系数 × 连续成功次数)
 # 越久没复习、历史得分越低，到期度越高；连续成功则降权，推迟复习。
 REVIEW_CONSECUTIVE_DAMPING = 0.5
@@ -219,7 +219,7 @@ class StrategyAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     def select_review_questions(self, db: DBSession, count: int = 3) -> list[Question]:
-        """回忆模式抽题：简易艾宾浩斯调度，到期度高的优先。
+        """回忆模式抽题：按到期度排序，到期度高的优先。
 
         到期度 = 距上次出现天数 × (1 - 历史平均得分/100) ÷ (1 + 降权系数 × 连续成功次数)
         无任何历史记录时返回空列表（由上层转成对用户提示）。

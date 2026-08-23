@@ -7,7 +7,7 @@
 // 注意：密钥红线——仅写入本机 .env，接口只回掩码，不上传不外泄
 import { ref, computed, onMounted } from 'vue'
 import { dashboard } from '../mock/dashboard'
-import { getLlmSettings, postLlmSettings, importDatabase } from '../api'
+import { getLlmSettings, postLlmSettings, importDatabase, exportDatabase } from '../api'
 
 const s = dashboard.settings
 // Provider 展示名 ↔ 后端 key（key 为 null 表示未接入，按钮置灰）
@@ -89,6 +89,28 @@ async function save() {
 }
 
 /* ---------- 数据备份与迁移 ---------- */
+const exporting = ref(false)
+
+// 导出整库：敏感接口要求 X-Local-Token（§10），fetch 成 Blob 后触发下载；文件名与后端口径一致
+async function doExport() {
+  if (exporting.value) return
+  exporting.value = true
+  try {
+    const blob = await exportDatabase()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `recall-backup-${new Date().toISOString().slice(0, 10).replaceAll('-', '')}.db`
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch (e) {
+    console.warn('[settings] 导出失败：', e.message)
+    alert('导出失败：' + e.message)
+  } finally {
+    exporting.value = false
+  }
+}
+
 const fileInput = ref(null)
 const importFile = ref(null)
 const importing = ref(false)
@@ -163,7 +185,7 @@ async function doImport() {
     <h2>数据备份与迁移 <span class="n">FIG.04-G</span></h2>
     <div class="set-row">
       <span class="lbl">导出</span>
-      <a class="btn btn--ghost" style="padding:7px 18px;font-size:12px;text-decoration:none" href="/api/settings/export" download>导出数据</a>
+      <button class="btn btn--ghost" style="padding:7px 18px;font-size:12px" :disabled="exporting" @click="doExport">{{ exporting ? '导出中…' : '导出数据' }}</button>
       <span class="key-status">下载完整数据文件（题库 + 背诵记录 + 笔记）</span>
     </div>
     <div class="set-row">

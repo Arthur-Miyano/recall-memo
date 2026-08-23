@@ -16,6 +16,7 @@ from agents import importer
 from agents.base import SCORE_PASS_THRESHOLD
 from api.deps import get_db
 from application.importer import IMPORT_JOBS, job_view, new_job, run_import, run_import_job
+from application.oplog import log_operation
 from application.uploads import (
     UploadRejectedError, read_upload, read_upload_batch, validate_document_upload,
 )
@@ -201,6 +202,14 @@ def bank_delete_question(question_id: int, db: DBSession = Depends(get_db)):
             touched_sessions += 1
 
     db.delete(question)
+    # 操作日志（§11）：与删除同一事务，含级联删除计数；request_id 由 contextvar 贯通
+    log_operation(db, "delete_question", str(question_id), {
+        "removed_records": removed_records,
+        "removed_focus": bool(focus),
+        "removed_retry": bool(retry),
+        "removed_groups": removed_groups,
+        "touched_sessions": touched_sessions,
+    })
     db.commit()
     return {
         "ok": True,
@@ -281,7 +290,13 @@ def bank_patch_question(question_id: int, req: QuestionPatchRequest, db: DBSessi
     if not changed:
         raise HTTPException(status_code=400, detail="没有提供任何要修改的字段")
 
+    # 操作日志（§11）：只记改了哪些字段名，不记新值内容
+    changed_fields = [
+        name for name in ("stem", "answer", "tech_stack", "difficulty", "keywords", "tags")
+        if getattr(req, name) is not None and (name != "tech_stack" or req.tech_stack.strip())
+    ]
     db.add(question)
+    log_operation(db, "edit_question", str(question_id), {"fields": changed_fields})
     db.commit()
     db.refresh(question)
     return _question_view(question)
@@ -313,6 +328,12 @@ def bank_migrate_questions(req: MigrateRequest, db: DBSession = Depends(get_db))
         if question is not None:
             question.tech_stack = to_stack
             db.add(question)
+    # 操作日志（§11）：与迁移同一事务，含 id 列表与命中/缺失计数
+    log_operation(db, "migrate_questions", to_stack, {
+        "question_ids": ids,
+        "moved": len(ids) - len(missing),
+        "missing": missing,
+    })
     db.commit()
     return {"ok": True, "moved": len(ids) - len(missing), "missing": missing, "to_stack": to_stack}
 

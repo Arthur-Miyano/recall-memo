@@ -174,6 +174,7 @@ def client(test_engine, fake_llm):
     from fastapi.testclient import TestClient
 
     from api.deps import get_db
+    from infrastructure.localguard import LOCAL_TOKEN, LOCAL_TOKEN_HEADER
     from main import app
 
     def override_get_db():
@@ -181,6 +182,7 @@ def client(test_engine, fake_llm):
             yield session
 
     app.dependency_overrides[get_db] = override_get_db
-    with TestClient(app) as c:
+    # 默认带本地令牌（§10）：敏感接口用例无需逐个造头；反例用空头/错token覆盖
+    with TestClient(app, headers={LOCAL_TOKEN_HEADER: LOCAL_TOKEN}) as c:
         yield c
     app.dependency_overrides.clear()

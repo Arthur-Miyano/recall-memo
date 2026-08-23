@@ -253,7 +253,7 @@ class TestImportFailureSanitization:
         def boom(src_path):
             raise RuntimeError(secret)
 
-        monkeypatch.setattr(datamove, "_merge_all", boom)
+        monkeypatch.setattr(datamove, "merge_all", boom)  # §9.1 合并器移到 application.dbmerge，此处打 HTTP 层的引用点
         resp = _upload(client, old_db)
         assert resp.status_code == 500
         # 脱敏红线：备份绝对路径与原始异常文本不得返回前端

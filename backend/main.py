@@ -14,6 +14,8 @@ from api import assistant, bank, datamove, events as events_api, health, home, l
 from application.uploads import UploadRejectedError
 from database import init_db
 from infrastructure.documents import DocumentParseError
+from infrastructure.localguard import local_guard_middleware, security_headers_middleware
+from infrastructure.requestctx import request_id_var
 from llm.errors import (
     LLMAuthenticationError,
     LLMError,
@@ -42,11 +44,24 @@ app = FastAPI(title="程序员八股背诵 Agent", lifespan=lifespan)
 # 请求链路与 LLM 错误边界（修复方案 §4.2）：request_id + 稳定错误结构
 # ----------------------------------------------------------------------
 
+# 本地安全边界（§10）：注册顺序即执行顺序的反序——request_id 最后注册最外层，
+# 先写 request.state.request_id，安全头中间件次之（guard 的 403 也带头），guard 最内层
+app.middleware("http")(local_guard_middleware)
+app.middleware("http")(security_headers_middleware)
+
+
 @app.middleware("http")
 async def request_id_middleware(request: Request, call_next):
-    """每个请求生成 request_id：挂响应头，错误响应体内也带上，便于贯通排障。"""
+    """每个请求生成 request_id：挂响应头，错误响应体内也带上，便于贯通排障。
+
+    同时写入 contextvar（§11）：下游 LLM 调用日志与 operation_logs 落库带同一 id。
+    """
     request.state.request_id = uuid4().hex[:12]
-    response = await call_next(request)
+    token = request_id_var.set(request.state.request_id)
+    try:
+        response = await call_next(request)
+    finally:
+        request_id_var.reset(token)
     response.headers["X-Request-ID"] = request.state.request_id
     return response
 

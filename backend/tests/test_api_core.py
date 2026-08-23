@@ -31,7 +31,9 @@ class TestHealth:
     def test_health(self, client):
         resp = client.get("/api/health")
         assert resp.status_code == 200
-        assert resp.json() == {"status": "ok"}
+        # §10：健康检查兼任本地令牌下发通道，body 多了 local_token 字段
+        assert resp.json()["status"] == "ok"
+        assert resp.json()["local_token"]
 
 
 class TestHomeSummary:

@@ -76,6 +76,38 @@ async function toApiError(resp, method, path) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
+/* ---------- 本地令牌（§10） ---------- */
+// 后端启动时生成，经 GET /api/health 下发（跨域网页受 SOP/CORS 限制读不到）；
+// 敏感写接口（设置/导入导出/删除/批量迁移）要求 X-Local-Token 头。
+// 令牌只存内存（不落 localStorage）；后端重启换新 → 403 LOCAL_TOKEN_* 时强制重取并重发一次
+let localToken = null
+let tokenPromise = null
+
+async function fetchLocalToken() {
+  try {
+    const resp = await fetch(BASE_URL + '/api/health')
+    if (!resp.ok) return
+    const d = await resp.json()
+    if (d.local_token) localToken = d.local_token
+  } catch { /* 后端不可达：保持无令牌，后续请求按原逻辑报网络错误 */ }
+}
+
+function ensureLocalToken(force = false) {
+  if (!force && localToken) return Promise.resolve()
+  if (!force && tokenPromise) return tokenPromise
+  tokenPromise = fetchLocalToken().finally(() => { tokenPromise = null })
+  return tokenPromise
+}
+
+const authHeaders = () => (localToken ? { 'X-Local-Token': localToken } : {})
+
+// 403 本地令牌错误 → 强制重取令牌（后端重启换 token 的场景），由调用方重发一次
+async function refreshTokenOnForbidden(err) {
+  if (err.code !== 'LOCAL_TOKEN_REQUIRED' && err.code !== 'LOCAL_TOKEN_INVALID') return false
+  await ensureLocalToken(true)
+  return true
+}
+
 // method/body/timeout/signal/retry/responseType:
 //   timeout      毫秒，0 表示不限时（requestForm 导入大库用）
 //   signal       外部 AbortSignal（页面卸载取消，见 createRequestScope）
@@ -86,14 +118,16 @@ export async function request(
   path,
   { method = 'GET', body, timeout = DEFAULT_TIMEOUT, signal, retry = 0, idempotent = false, responseType } = {},
 ) {
+  await ensureLocalToken()   // 首次请求前取本地令牌（已缓存则立即返回）
   let attempt = 0
+  let tokenRefreshed = false
   for (;;) {
     const combined = combineSignals(timeout, signal)
     let resp
     try {
       resp = await fetch(BASE_URL + path, {
         method,
-        headers: body ? { 'Content-Type': 'application/json' } : undefined,
+        headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...authHeaders() },
         body: body ? JSON.stringify(body) : undefined,
         signal: combined.signal,
       })
@@ -109,7 +143,15 @@ export async function request(
       throw err
     }
     combined.done()
-    if (!resp.ok) throw await toApiError(resp, method, path)
+    if (!resp.ok) {
+      const err = await toApiError(resp, method, path)
+      // 后端重启换了令牌：重取一次并重发本请求（不消耗 retry 预算）
+      if (!tokenRefreshed && await refreshTokenOnForbidden(err)) {
+        tokenRefreshed = true
+        continue
+      }
+      throw err
+    }
     offline.value = false // 后端恢复后下一次成功请求自动摘掉角标
     if (resp.status === 204) return null
     if (responseType === 'blob') return resp.blob()
@@ -120,20 +162,33 @@ export async function request(
 // multipart 版本（文件上传）：与 request 同款错误处理，但不设 Content-Type（浏览器自动生成 boundary）
 // 导入整库合并耗时随库大小增长，默认不限时；支持 signal 取消
 export async function requestForm(path, formData, { timeout = 0, signal } = {}) {
-  const combined = combineSignals(timeout, signal)
-  let resp
-  try {
-    resp = await fetch(BASE_URL + path, { method: 'POST', body: formData, signal: combined.signal })
-  } catch (e) {
+  await ensureLocalToken()
+  let tokenRefreshed = false
+  for (;;) {
+    const combined = combineSignals(timeout, signal)
+    let resp
+    try {
+      resp = await fetch(BASE_URL + path, {
+        method: 'POST', headers: authHeaders(), body: formData, signal: combined.signal,
+      })
+    } catch (e) {
+      combined.done()
+      if (combined.isCancel()) throw e
+      throw networkError('POST', path, e)
+    }
     combined.done()
-    if (combined.isCancel()) throw e
-    throw networkError('POST', path, e)
+    if (!resp.ok) {
+      const err = await toApiError(resp, 'POST', path)
+      if (!tokenRefreshed && await refreshTokenOnForbidden(err)) {
+        tokenRefreshed = true
+        continue
+      }
+      throw err
+    }
+    offline.value = false
+    if (resp.status === 204) return null
+    return resp.json()
   }
-  combined.done()
-  if (!resp.ok) throw await toApiError(resp, 'POST', path)
-  offline.value = false
-  if (resp.status === 204) return null
-  return resp.json()
 }
 
 /* ---------- 首页 / 题库 / 设置 / 助理 ---------- */
@@ -147,7 +202,10 @@ export const deleteBankQuestion = (id) =>
 export const getLlmSettings = () => request('/api/settings/llm')
 export const postLlmSettings = (payload) =>
   request('/api/settings/llm', { method: 'POST', body: payload })
-// 数据备份与迁移：导出走浏览器直接下载（a 标签 href），导入走 multipart 上传
+// 数据备份与迁移：导出/导入都是敏感接口（§10，要求 X-Local-Token）——
+// 导出不能走 <a href> 直下（带不了请求头），fetch 成 Blob 后触发浏览器下载；导入走 multipart 上传
+export const exportDatabase = () =>
+  request('/api/settings/export', { responseType: 'blob', timeout: 0 })
 export const importDatabase = (formData) => requestForm('/api/settings/import-db', formData)
 export const assistantChat = (payload) =>
   request('/api/assistant/chat', { method: 'POST', body: payload })
