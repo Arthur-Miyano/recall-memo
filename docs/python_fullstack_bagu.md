@@ -1853,18 +1853,18 @@ class DatabaseTransaction:
             return False
 
 # ================ 不要用异常做流程控制 ================
-# ❌ 反模式：用异常检查键是否存在
+# × 反模式：用异常检查键是否存在
 def bad_get_user(users, user_id):
     try:
         return users[user_id]
     except KeyError:
         return None
 
-# ✅ 正确做法：用 dict.get()
+# √ 正确做法：用 dict.get()
 def good_get_user(users, user_id):
     return users.get(user_id)
 
-# ❌ 反模式：用异常检查文件是否存在
+# × 反模式：用异常检查文件是否存在
 import os
 
 def bad_read_file(path):
@@ -1874,7 +1874,7 @@ def bad_read_file(path):
     except FileNotFoundError:
         return ""
 
-# ✅ 正确做法：先检查
+# √ 正确做法：先检查
 
 def good_read_file(path):
     if not os.path.exists(path):
@@ -4720,7 +4720,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             return response
         except Exception as e:
             process_time = time.time() - start_time
-            print(f"[{request_id}] ✕ ERROR: {e} ({process_time:.3f}s)")
+            print(f"[{request_id}] × ERROR: {e} ({process_time:.3f}s)")
             raise
 
 app.add_middleware(LoggingMiddleware)
@@ -6571,7 +6571,7 @@ SQL 注入通过在输入中嵌入 SQL 代码，操纵数据库执行非预期�
 ```python
 import sqlite3
 
-# ❌ 危险：字符串拼接 SQL
+# × 危险：字符串拼接 SQL
 def unsafe_login(username, password):
     conn = sqlite3.connect('users.db')
     cursor = conn.cursor()
@@ -6580,7 +6580,7 @@ def unsafe_login(username, password):
     cursor.execute(query)
     return cursor.fetchone()
 
-# ✅ 安全：使用参数化查询
+# √ 安全：使用参数化查询
 def safe_login(username, password):
     conn = sqlite3.connect('users.db')
     cursor = conn.cursor()
@@ -6591,7 +6591,7 @@ def safe_login(username, password):
     )
     return cursor.fetchone()
 
-# ✅ SQLAlchemy ORM 方式（自动参数化）
+# √ SQLAlchemy ORM 方式（自动参数化）
 from sqlalchemy.orm import Session
 from models import User  # 假设有 ORM 模型
 
@@ -6646,7 +6646,7 @@ def get_data():
     return {'data': 'sensitive info'}
 ```
 
-> ⚠️ 生产环境中使用 `flask-cors` 等成熟库，不要手写 CORS 逻辑。
+> 注意：生产环境中使用 `flask-cors` 等成熟库，不要手写 CORS 逻辑。
 
 ### 4.5 JWT 安全
 
@@ -11558,9 +11558,9 @@ class OrderAggregate:
 ```
 
 **DDD 的适用场景：**
-- ✅ 业务逻辑复杂、规则多变（如电商、金融、供应链）
-- ✅ 团队规模较大，需要统一业务语言
-- ❌ 简单的 CRUD 应用或原型项目（过度设计）
+- √ 业务逻辑复杂、规则多变（如电商、金融、供应链）
+- √ 团队规模较大，需要统一业务语言
+- × 简单的 CRUD 应用或原型项目（过度设计）
 
 ### 常见面试题
 
@@ -11578,8 +11578,8 @@ class UserService:
     async def get_user(self, user_id: int) -> dict:
         user = await self.repo.get(user_id)
         return {
-            "code": 200,          # ❌ 不应该在 Service 层处理 HTTP 状态码
-            "data": {             # ❌ 不应该在 Service 层处理响应包装
+            "code": 200,          # × 不应该在 Service 层处理 HTTP 状态码
+            "data": {             # × 不应该在 Service 层处理响应包装
                 "id": user.id,
                 "name": user.name
             }
@@ -11594,7 +11594,7 @@ class UserService:
 @router.get("/users/{user_id}")
 async def get_user(user_id: int, service: UserService = Depends()):
     user = await service.get_user(user_id)
-    return {"code": 200, "data": UserResponse.from_orm(user)}  # ✅
+    return {"code": 200, "data": UserResponse.from_orm(user)}  # √
 ```
 
 #### 面试题 2：什么时候应该选择 Clean Architecture，什么时候简单的三层架构就够了？
@@ -11643,26 +11643,26 @@ PEP 8 是 Python 官方的代码风格指南，涵盖命名约定、代码布局
 
 ```python
 # 模块名：小写，可用下划线分隔
-# my_module.py ✓    mymodule.py ✓    MyModule.py ✗
+# my_module.py √    mymodule.py √    MyModule.py ×
 
 # 类名：驼峰命名法（CapWords）
-class UserAccountManager:  # ✅
+class UserAccountManager:  # √
     pass
 
-class user_account_manager:  # ❌
+class user_account_manager:  # ×
     pass
 
 # 函数名和变量名：小写，下划线分隔
 
-def calculate_order_total(items):  # ✅
+def calculate_order_total(items):  # √
     pass
 
-def CalculateOrderTotal(items):  # ❌ 这是类名的命名方式
+def CalculateOrderTotal(items):  # × 这是类名的命名方式
     pass
 
 # 常量：全大写，下划线分隔
-MAX_RETRY_COUNT = 3  # ✅
-max_retry_count = 3   # ❌ 容易与变量混淆
+MAX_RETRY_COUNT = 3  # √
+max_retry_count = 3   # × 容易与变量混淆
 
 # 私有属性/方法：单下划线前缀
 class UserService:
@@ -12153,17 +12153,17 @@ async def legacy_endpoint(response: Response):
 向后兼容（Backward Compatible）的 API 变更是指：新版本的 API 仍然能被旧客户端正常消费，无需修改客户端代码。
 
 **兼容的变更（无需版本升级）：**
-- ✅ 新增可选的请求参数
-- ✅ 新增响应字段（客户端应忽略不认识字段）
-- ✅ 放宽参数校验（如最小长度从 5 改为 3）
-- ✅ 新增接口（不影响现有接口）
+- √ 新增可选的请求参数
+- √ 新增响应字段（客户端应忽略不认识字段）
+- √ 放宽参数校验（如最小长度从 5 改为 3）
+- √ 新增接口（不影响现有接口）
 
 **不兼容的变更（需要版本升级）：**
-- ❌ 删除或重命名字段
-- ❌ 改变字段数据类型
-- ❌ 将可选参数改为必填
-- ❌ 改变接口 URL 路径
-- ❌ 改变错误响应结构
+- × 删除或重命名字段
+- × 改变字段数据类型
+- × 将可选参数改为必填
+- × 改变接口 URL 路径
+- × 改变错误响应结构
 
 **向后兼容的设计技巧：**
 
@@ -12626,7 +12626,7 @@ def memory_intensive():
 **1. 算法优化（Big O 优化）**
 
 ```python
-# ❌ O(n²) —— 查找重复元素
+# × O(n²) —— 查找重复元素
 def find_duplicates_slow(items):
     duplicates = []
     for i in range(len(items)):
@@ -12635,7 +12635,7 @@ def find_duplicates_slow(items):
                 duplicates.append(items[i])
     return duplicates
 
-# ✅ O(n) —— 使用集合
+# √ O(n) —— 使用集合
 def find_duplicates_fast(items):
     seen = set()
     duplicates = set()
@@ -12649,14 +12649,14 @@ def find_duplicates_fast(items):
 **2. 使用生成器节省内存**
 
 ```python
-# ❌ 一次性加载所有数据到内存
+# × 一次性加载所有数据到内存
 
 def process_large_file_slow(filepath):
     with open(filepath) as f:
         lines = f.readlines()  # 100 万行 = 大量内存
     return [line.strip() for line in lines if "ERROR" in line]
 
-# ✅ 逐行处理，内存占用恒定
+# √ 逐行处理，内存占用恒定
 def process_large_file_fast(filepath):
     with open(filepath) as f:
         for line in f:  # 每次只读取一行
@@ -12693,11 +12693,11 @@ def get_user_from_db(user_id: int):
 **4. 批量操作减少 I/O**
 
 ```python
-# ❌ 逐条插入（N 次数据库往返）
+# × 逐条插入（N 次数据库往返）
 for user in users:
     db.execute("INSERT INTO users (name, email) VALUES (?, ?)", (user.name, user.email))
 
-# ✅ 批量插入（1 次数据库往返）
+# √ 批量插入（1 次数据库往返）
 # SQLAlchemy
 session.bulk_insert_mappings(User, [u.__dict__ for u in users])
 
@@ -13001,16 +13001,16 @@ async def call_payment_service():
 **Python 中的实践示例：**
 
 ```python
-# ❌ 慢查询：深分页 OFFSET 100000 会导致数据库扫描 10 万行
+# × 慢查询：深分页 OFFSET 100000 会导致数据库扫描 10 万行
 SELECT * FROM orders ORDER BY created_at DESC LIMIT 20 OFFSET 100000;
 
-# ✅ 优化：基于索引列的范围查询
+# √ 优化：基于索引列的范围查询
 SELECT * FROM orders 
 WHERE created_at < '2024-01-01'  # 利用 created_at 索引
 ORDER BY created_at DESC 
 LIMIT 20;
 
-# ✅ 更好的方案：游标分页（适合无限滚动场景）
+# √ 更好的方案：游标分页（适合无限滚动场景）
 SELECT * FROM orders 
 WHERE (created_at, id) < (last_created_at, last_id)  # 上一页最后一条记录
 ORDER BY created_at DESC, id DESC

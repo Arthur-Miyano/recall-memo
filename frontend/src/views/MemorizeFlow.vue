@@ -203,7 +203,7 @@ async function exportCard() {
         <div class="pm-head">
           <span class="fig">{{ questions[zoomIdx].no }}<template v-if="questions[zoomIdx].retry"> · 待补答</template></span>
           <h2>题目记忆</h2>
-          <button class="pm-close" title="关闭（Esc）" @click="closeZoom">✕</button>
+          <button class="pm-close" title="关闭（Esc）" @click="closeZoom">×</button>
         </div>
         <div class="pm-body">
           <div class="pm-q">{{ questions[zoomIdx].title }}</div>

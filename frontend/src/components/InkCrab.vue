@@ -164,7 +164,7 @@ function send() {
   <div class="chat-panel" :class="{ show: panelShow }" :style="panelStyle" ref="panelEl">
     <div class="chat-head">
       <button class="sess-btn" title="对话列表" @click="toggleSessions">≡ 对话</button>
-      <b>记忆助手</b><span>RECALL ASSISTANT</span><span class="x" @click="closePanel">✕</span>
+      <b>记忆助手</b><span>RECALL ASSISTANT</span><span class="x" @click="closePanel">×</span>
     </div>
     <div class="chat-quick">
       <button v-for="p in assistant.quickPrompts" :key="p.label" @click="ask(p.q, QUICK_KEYS[p.label])">{{ p.label }}</button>
@@ -187,7 +187,7 @@ function send() {
             <button class="ac-no" :disabled="m.actionRunning" @click="cancelAction(m)">取消</button>
           </div>
           <div class="ac-state" :class="m.actionState" v-else>
-            {{ m.actionState === 'done' ? '✓ 已执行' : '已取消' }}
+            {{ m.actionState === 'done' ? '√ 已执行' : '已取消' }}
           </div>
         </div>
       </div>
@@ -204,7 +204,7 @@ function send() {
       @pointerup="onGripUp" @pointercancel="onGripUp"
     ></div>
 
-    <!-- 会话抽屉：面板内覆盖层，列表（标题 + 时间 + 条数），hover 出删除 ✕，顶部「+ 新对话」 -->
+    <!-- 会话抽屉：面板内覆盖层，列表（标题 + 时间 + 条数），hover 出删除 ×，顶部「+ 新对话」 -->
     <div class="chat-sessions" v-if="sessionsOpen">
       <div class="chat-sessions-head">
         <span>对话列表</span>
@@ -218,7 +218,7 @@ function send() {
         >
           <span class="t">{{ s.title }}</span>
           <span class="meta">{{ fmtTime(s.updated_at) }} · {{ s.message_count }} 条</span>
-          <span class="del" title="删除该对话" @click.stop="removeSession(s)">✕</span>
+          <span class="del" title="删除该对话" @click.stop="removeSession(s)">×</span>
         </div>
         <div class="chat-sess-empty" v-if="!sessions.length">暂无历史对话</div>
       </div>

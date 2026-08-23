@@ -194,7 +194,7 @@ const {
         <div class="pm-head">
           <span class="fig">EDIT — 题 #{{ editing.id }}</span>
           <h2>编辑题目</h2>
-          <button class="pm-close" title="关闭" @click="closeEdit">✕</button>
+          <button class="pm-close" title="关闭" @click="closeEdit">×</button>
         </div>
         <div class="pm-body qe-body">
           <label class="qe-field">
@@ -289,10 +289,10 @@ const {
 .mig-link:hover:not(:disabled) { color: var(--ink); }
 .mig-err { color: var(--seal); font-size: 12px; }
 
-/* 迁移模式下的题格：选中盖印章红描边 + ✓ 角标 */
+/* 迁移模式下的题格：选中盖印章红描边 + √ 角标 */
 .qcell.picked { outline: 2px solid var(--seal); outline-offset: 1px; }
 .qcell.picked::after {
-  content: '✓';
+  content: '√';
   position: absolute; top: -9px; right: -7px;
   width: 13px; height: 13px;
   background: var(--seal); color: var(--paper);

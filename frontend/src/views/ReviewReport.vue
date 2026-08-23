@@ -254,7 +254,7 @@ function cells(v) { return Math.floor(v / 10) }
           <span class="fig">{{ zoomPaper.no }}</span>
           <h2>单题复盘</h2>
           <span class="score" v-if="zoomPaper.score" style="font-family:var(--mono);font-size:15px">{{ zoomPaper.score }}<small> /100</small></span>
-          <button class="pm-close" title="关闭（Esc）" @click="closeZoom">✕</button>
+          <button class="pm-close" title="关闭（Esc）" @click="closeZoom">×</button>
         </div>
         <div class="pm-body">
           <div class="pm-q">{{ zoomPaper.title }}</div>

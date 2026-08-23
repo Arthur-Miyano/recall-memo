@@ -120,7 +120,7 @@ const progressPct = computed(() => {
         <li v-for="(f, i) in files" :key="f.name + f.size">
           <span class="ip-file-name">{{ f.name }}</span>
           <span class="ip-file-size">{{ formatKb(f.size) }} KB</span>
-          <button class="ip-picked-clear" @click="removeFile(i)">✕ 移除</button>
+          <button class="ip-picked-clear" @click="removeFile(i)">× 移除</button>
         </li>
       </ul>
 
@@ -159,7 +159,7 @@ const progressPct = computed(() => {
       </div>
       <ul>
         <li v-for="fe in result.file_errors" :key="'fe' + fe.file">
-          <span class="mk err">✕ 文件</span><span>{{ fe.file }}</span><span class="why">{{ fe.reason }}</span>
+          <span class="mk err">× 文件</span><span>{{ fe.file }}</span><span class="why">{{ fe.reason }}</span>
         </li>
       </ul>
       <div v-for="f in result.files" :key="f.file" class="ip-file-result">
@@ -173,11 +173,11 @@ const progressPct = computed(() => {
             <span class="why">与《{{ it.similar_to }}》相似 {{ it.similarity }}%</span>
           </li>
           <li v-for="(it, i) in f.enriched" :key="'e' + i">
-            <span class="mk ai">✎ 补全</span><span>{{ it.title }}</span>
+            <span class="mk ai">补全</span><span>{{ it.title }}</span>
             <span class="why">AI 生成：{{ it.fields.join('、') }}</span>
           </li>
           <li v-for="(it, i) in f.errors" :key="'r' + i">
-            <span class="mk err">✕ 失败</span><span>{{ it.title }}</span><span class="why">{{ it.reason }}</span>
+            <span class="mk err">× 失败</span><span>{{ it.title }}</span><span class="why">{{ it.reason }}</span>
           </li>
         </ul>
       </div>
