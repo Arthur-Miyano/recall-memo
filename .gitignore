@@ -12,6 +12,7 @@ data/backup*/
 .tmp/
 .pytest-tmp/
 .coverage
+*.lnk
 
 # 本地资料与演示产物，不入库
 docs/部署指南-云托管.md
