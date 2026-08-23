@@ -28,11 +28,11 @@ class InterviewerAgent(BaseAgent):
 
     name = "面试官"
 
-    async def run(self, question: Question, db: DBSession) -> str:
+    async def run(self, question: Question, db: DBSession, commit: bool = True) -> str:
         """主入口：为一道题生成新的变体题干。"""
-        return await self.generate_variant(question, db)
+        return await self.generate_variant(question, db, commit=commit)
 
-    async def generate_variant(self, question: Question, db: DBSession) -> str:
+    async def generate_variant(self, question: Question, db: DBSession, commit: bool = True) -> str:
         """基于原始题干生成面试官口吻的变体题干。
 
         - 已用过的变体（仅最近 MAX_STORED_VARIANTS 条）会注入 prompt，要求模型避免重复；
@@ -57,5 +57,6 @@ class InterviewerAgent(BaseAgent):
         # 防止 variants 无限膨胀：既避免 JSON 列越写越大，也避免 prompt 注入的历史变体越积越长
         question.variants = [*used, variant][-MAX_STORED_VARIANTS:]
         db.add(question)
-        db.commit()
+        if commit:
+            db.commit()
         return variant

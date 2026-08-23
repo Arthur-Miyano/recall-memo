@@ -2,14 +2,15 @@
 // 职责：会话创建 / 恢复决策（§8.1 服务端为唯一事实来源）、快照保存恢复、
 //       考核推进（start_quiz / answer）、中断后幂等重放取回评分结果
 // 视图（views/MemorizeFlow.vue）只留展示态：单题放大、划句存笔记、答题框自适应、导出卡片
-import { ref, watch, onMounted, onBeforeUnmount, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { memorizeSession as m } from '../mock/memorize'
 import {
   createSession, getSessionInfo, startQuiz as apiStartQuiz, getCurrent, submitAnswer,
   newIdempotencyKey, offline, createRequestScope,
 } from '../api'
-import { decideRestore, draftStillValid } from '../utils/sessionRecovery'
+import { decideRestore, draftStillValid, shouldResyncMemorize } from '../utils/sessionRecovery'
+import { canSubmit, OFFLINE_WRITE_TIP } from '../utils/offlineGuard'
 import { useSessionStore } from '../stores/session'
 
 export function useMemorizeSession() {
@@ -134,11 +135,12 @@ export function useMemorizeSession() {
   }
 
   // 考核中恢复：以服务端 current 为准刷新当前题；草稿仅在同题时保留
-  async function resyncCurrent(snap) {
-    if (!snap.quizzing || snap.finished || snap.useMock) return
+  async function resyncCurrent(snap, serverInfo) {
+    if (!shouldResyncMemorize({ snapshot: snap, serverInfo })) return
     if (snap.fbShow) return   // 已出反馈：纯展示态，原样恢复
     try {
       const cur = await getCurrent(sessionId.value, { retry: 1, signal: scope.signal })
+      quizzing.value = true
       quiz.value = {
         question: cur.variant_stem,
         followTag: `考核 ${cur.progress} · 已打乱`,
@@ -171,16 +173,17 @@ export function useMemorizeSession() {
         if (offline.value) { restoreSnapshot(snap); return }
       } else if (snap.sessionId) {
         let decision
+        let serverInfo
         try {
-          const info = await getSessionInfo(snap.sessionId, { retry: 1, signal: scope.signal })
-          decision = decideRestore({ snapshot: snap, serverInfo: info, expectedMode: mode })
+          serverInfo = await getSessionInfo(snap.sessionId, { retry: 1, signal: scope.signal })
+          decision = decideRestore({ snapshot: snap, serverInfo, expectedMode: mode })
         } catch (e) {
           if (scope.signal.aborted) return
           decision = decideRestore({ snapshot: snap, serverError: e, expectedMode: mode })
         }
         if (decision.action === 'restore') {
           restoreSnapshot(snap)
-          await resyncCurrent(snap)
+          await resyncCurrent(snap, serverInfo)
           saveSnapshot()
           return
         }
@@ -233,9 +236,13 @@ export function useMemorizeSession() {
   // 页面卸载：取消挂起请求（AbortError，不置离线标记）
   onUnmounted(() => scope.cancel())
 
+  // 离线只读：真实会话（非 mock）在 offline 期间禁止开始考核/提交；mock 演示路径不受影响
+  const canWrite = computed(() => canSubmit({ offline: offline.value, useMock: useMock.value, busy: busy.value }))
+
   // 开始考核：真实模式调 start_quiz + current；mock 模式仅切 UI
   async function startQuiz() {
     if (useMock.value) { quizzing.value = true; return }
+    if (offline.value) { alert(OFFLINE_WRITE_TIP); return }
     busy.value = '面试官 AGENT 出题中…'
     try {
       await apiStartQuiz(sessionId.value)
@@ -263,6 +270,7 @@ export function useMemorizeSession() {
   // 提交作答：真实模式拿即时评分反馈；答错后端自动入待补答队列
   async function submitQuiz() {
     if (useMock.value) { fbShow.value = true; return }
+    if (offline.value) { alert(OFFLINE_WRITE_TIP); return }
     const text = answerText.value.trim()
     if (!text) return
     busy.value = '评分 AGENT 批改中…'
@@ -303,7 +311,7 @@ export function useMemorizeSession() {
 
   return {
     loadError, quizzing, kwShow, fbShow,
-    topLeft, topRight, questions, quiz, answerText, feedback, finished, summary, busy,
+    topLeft, topRight, questions, quiz, answerText, feedback, finished, summary, busy, canWrite,
     startQuiz, submitQuiz, nextQuestion, toggleKw,
   }
 }

@@ -115,6 +115,34 @@ class TestLlmSettingsPost:
         content = isolated_settings.read_text(encoding="utf-8")
         assert "DEEPSEEK_API_KEY=sk-olddeepseekkey123456" in content
 
+    def test_write_failure_does_not_change_runtime_settings(self, client, isolated_settings, monkeypatch):
+        """持久化失败时，环境变量和当前进程配置都保持原值。"""
+        from api import settings as settings_api
+
+        old_key = settings.deepseek_api_key
+        old_model = settings.llm_model
+        old_priority = settings.llm_provider_priority
+        old_env_key = os.environ.get("DEEPSEEK_API_KEY")
+        old_env_model = os.environ.get("LLM_MODEL")
+        old_env_priority = os.environ.get("LLM_PROVIDER_PRIORITY")
+
+        def fail_write(_updates):
+            raise OSError("模拟配置写入失败")
+
+        monkeypatch.setattr(settings_api, "_write_env", fail_write)
+        with pytest.raises(OSError, match="模拟配置写入失败"):
+            client.post(
+                "/api/settings/llm",
+                json={"provider": "deepseek", "api_key": "sk-new", "model": "new-model"},
+            )
+
+        assert settings.deepseek_api_key == old_key
+        assert settings.llm_model == old_model
+        assert settings.llm_provider_priority == old_priority
+        assert os.environ.get("DEEPSEEK_API_KEY") == old_env_key
+        assert os.environ.get("LLM_MODEL") == old_env_model
+        assert os.environ.get("LLM_PROVIDER_PRIORITY") == old_env_priority
+
 
 class TestEnvAtomicWrite:
     """.env 原子写入 + 同进程写锁（§10）：并发不撕裂，失败不留半截。"""

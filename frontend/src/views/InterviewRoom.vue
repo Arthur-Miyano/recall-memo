@@ -17,6 +17,7 @@ import {
   newIdempotencyKey, offline, createRequestScope,
 } from '../api'
 import { decideRestore, draftStillValid } from '../utils/sessionRecovery'
+import { canSubmit, OFFLINE_WRITE_TIP } from '../utils/offlineGuard'
 import { useSessionStore } from '../stores/session'
 import { interviewSeconds, interviewTimedOut } from '../utils/interviewTimer'
 
@@ -228,9 +229,13 @@ function onInput(e) {
   el.style.height = Math.max(260, el.scrollHeight) + 'px'
 }
 
+// 离线只读：真实会话（非 mock）在 offline 期间禁止提交/跳过；mock 演示路径不受影响
+const canWrite = computed(() => canSubmit({ offline: offline.value, useMock: useMock.value, busy: busy.value }))
+
 // 提交回答：面试模式只回执「已记录」，不透露对错
 async function submit() {
   if (useMock.value) { recorded.value = true; return }
+  if (offline.value) { alert(OFFLINE_WRITE_TIP); return }
   const text = answerText.value.trim()
   if (!text) return
   busy.value = '记录中…'
@@ -250,6 +255,7 @@ async function submit() {
 // 跳过本题：判负（不给补答、不进待补答队列）
 async function skip() {
   if (useMock.value) { recorded.value = true; return }
+  if (offline.value) { alert(OFFLINE_WRITE_TIP); return }
   busy.value = '记录中…'
   try {
     if (!skipKey) skipKey = newIdempotencyKey()
@@ -312,8 +318,8 @@ function next() {
       <div v-show="!recorded">
         <textarea ref="answerEl" class="iv-input" :placeholder="iv.placeholder" v-model="answerText" @input="onInput"></textarea>
         <div class="iv-actions">
-          <button class="btn" :disabled="!!busy" @click="submit">{{ busy || '提交回答' }}</button>
-          <button class="btn btn--ghost" :disabled="!!busy" @click="skip">跳过本题</button>
+          <button class="btn" :disabled="!canWrite" @click="submit">{{ busy || '提交回答' }}</button>
+          <button class="btn btn--ghost" :disabled="!canWrite" @click="skip">跳过本题</button>
           <span class="spacer" style="flex:1"></span>
           <span class="iv-note">{{ iv.note }}</span>
         </div>

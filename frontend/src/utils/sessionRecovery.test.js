@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { SNAPSHOT_VERSION, decideRestore, draftStillValid } from './sessionRecovery.js'
+import { SNAPSHOT_VERSION, decideRestore, draftStillValid, shouldResyncMemorize } from './sessionRecovery.js'
 
 const snap = (over = {}) => ({ version: SNAPSHOT_VERSION, sessionId: 7, finished: false, ...over })
 
@@ -77,4 +77,10 @@ test('草稿有效性：同一题才保留，服务端已推进则丢弃', () =>
   assert.equal(draftStillValid(42, 42), true)
   assert.equal(draftStillValid(43, 42), false)
   assert.equal(draftStillValid(42, null), false)
+})
+
+test('服务端已进入考核态时，即使本地仍是展示态也要同步当前题', () => {
+  const snapshot = snap({ quizzing: false, finished: false, useMock: false })
+  assert.equal(shouldResyncMemorize({ snapshot, serverInfo: { state: 'MEMORIZE_QUIZ' } }), true)
+  assert.equal(shouldResyncMemorize({ snapshot, serverInfo: { state: 'MEMORIZE_SHOW' } }), false)
 })

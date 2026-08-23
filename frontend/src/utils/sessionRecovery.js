@@ -40,3 +40,11 @@ export function decideRestore({ snapshot, serverInfo = null, serverError = null,
 // 服务端已推进（提交成功但响应丢失）则草稿已被接收，以服务端为准丢弃本地草稿
 export const draftStillValid = (serverQuestionId, snapshotQuestionId) =>
   snapshotQuestionId != null && serverQuestionId === snapshotQuestionId
+
+const MEMORIZE_QUIZ_STATES = new Set(['MEMORIZE_QUIZ', 'REVIEW_QUIZ'])
+
+// 是否需要以服务端当前题重建考核界面。不能依赖本地 quizzing：start_quiz 响应丢失时它仍为 false。
+export function shouldResyncMemorize({ snapshot, serverInfo } = {}) {
+  if (!snapshot || snapshot.finished || snapshot.useMock) return false
+  return MEMORIZE_QUIZ_STATES.has(serverInfo?.state)
+}

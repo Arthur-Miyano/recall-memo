@@ -348,34 +348,28 @@ class OrchestratorAgent(BaseAgent):
     async def _interview_answer(
         self, db: DBSession, session: Session, answer: str, started_at: Optional[str], op: WorkflowOperation
     ) -> dict[str, Any]:
-        """面试答题：LLM 评分（不持事务）→ 原子写库（记录+统计+推进），响应只回执"已记录"。"""
+        """面试答题：先完成全部 LLM 工作，再原子写入记录、推进状态和操作结果。"""
         question = db.get(Question, session.quiz_order[session.current_index])
         if question is None:
             raise StateError("当前题目在题库中不存在")
 
-        # LLM 阶段：评分照常异步算好（INTERVIEW_SCORE，结果不透露给用户）
-        self.workflow.transition(db, session, SessionState.INTERVIEW_SCORE, self.grader.name)
+        # LLM 阶段不提交 Session 中间态；失败后数据库仍停在原题，可用同键重试。
         events.publish(self.grader.name, "判分中…")
         score = await self.grader.run(question, answer)
-
-        # 原子写库：答题记录 + 评分回填 + 待补答队列 + 日统计 + 会话推进，一次提交
-        record_id = self.assistant.log_answer(db, session.id, question.id, answer, operation_id=op.id, commit=False)
-        self.assistant.fill_scores(db, record_id, score, commit=False)
-        results = list(session.context.get("results") or [])
-        results.append({
+        pending_result = {
             "question_id": question.id,
             "user_answer": answer,
-            "record_id": record_id,
             "score": score,
             "skipped": False,
-            "started_at": started_at,  # 调用方标记的开始作答时间（时间压力检测留给前端）
-        })
-        session.context = {**session.context, "results": results}
-        session.current_index += 1
-        session.updated_at = datetime.now(timezone.utc)
-        db.add(session)
-        db.commit()
-        return await self._interview_advance(db, session, question.id, record_id)
+            "started_at": started_at,
+        }
+        advance = await self._prepare_interview_advance(db, session, pending_result)
+
+        # 不在此提交；OperationCoordinator 会把业务数据与 SUCCEEDED/result 一次提交。
+        record_id = self.assistant.log_answer(db, session.id, question.id, answer, operation_id=op.id, commit=False)
+        self.assistant.fill_scores(db, record_id, score, commit=False)
+        pending_result["record_id"] = record_id
+        return self._apply_interview_advance(db, session, question.id, record_id, pending_result, advance)
 
     async def skip_question(self, db: DBSession, session_id: int, idempotency_key: Optional[str] = None) -> dict[str, Any]:
         """面试跳过：标记为失败（总分 0），不消耗补答机会、不给补答，直接推进。幂等键去重。"""
@@ -393,48 +387,102 @@ class OrchestratorAgent(BaseAgent):
         )
 
     async def _skip_answer(self, db: DBSession, session: Session, op: WorkflowOperation) -> dict[str, Any]:
-        """跳过落库：失败记录 + 日统计 + 会话推进，一次原子提交（不消耗补答机会、不入待补答队列）。"""
+        """跳过：先准备下一题/复盘，再与失败记录、统计和操作结果原子提交。"""
         question = db.get(Question, session.quiz_order[session.current_index])
         if question is None:
             raise StateError("当前题目在题库中不存在")
 
-        record_id = self.assistant.log_skip(db, session.id, question.id, operation_id=op.id, commit=False)
-        results = list(session.context.get("results") or [])
-        results.append({
+        pending_result = {
             "question_id": question.id,
             "user_answer": "",
-            "record_id": record_id,
             "score": None,
             "skipped": True,
-        })
-        session.context = {**session.context, "results": results}
-        session.current_index += 1
-        session.updated_at = datetime.now(timezone.utc)
-        db.add(session)
-        db.commit()
-        return await self._interview_advance(db, session, question.id, record_id)
+        }
+        advance = await self._prepare_interview_advance(db, session, pending_result)
+        record_id = self.assistant.log_skip(db, session.id, question.id, operation_id=op.id, commit=False)
+        pending_result["record_id"] = record_id
+        return self._apply_interview_advance(db, session, question.id, record_id, pending_result, advance)
 
-    async def _interview_advance(
-        self, db: DBSession, session: Session, question_id: int, record_id: int
+    async def _prepare_interview_advance(
+        self, db: DBSession, session: Session, pending_result: dict[str, Any]
     ) -> dict[str, Any]:
-        """面试推进：有下一题则出题，否则进入终局复盘并生成报告。"""
+        """在写入答题结果前完成下一题或复盘所需的全部 LLM 工作。"""
+        results = list(session.context.get("results") or [])
+        next_index = session.current_index + 1
+        if next_index < len(session.quiz_order):
+            next_question = db.get(Question, session.quiz_order[next_index])
+            if next_question is None:
+                raise StateError("下一题在题库中不存在")
+            events.publish(self.interviewer.name, "提问中…")
+            variant = await self.interviewer.run(next_question, db, commit=False)
+            return {
+                "finished": False,
+                "results": results,
+                "question": next_question,
+                "variant": variant,
+                "asked_at": datetime.now(timezone.utc).isoformat(),
+            }
+
+        # 报告生成只读取预览上下文；失败时 Coordinator rollback，不留下已推进状态。
+        session.context = {**session.context, "results": [*results, pending_result]}
+        db.add(session)
+        events.publish(self.assistant.name, "生成复盘报告…")
+        report = await self.assistant.build_review_report(db, session)
+        return {"finished": True, "results": results, "report": report}
+
+    def _apply_interview_advance(
+        self,
+        db: DBSession,
+        session: Session,
+        question_id: int,
+        record_id: int,
+        result: dict[str, Any],
+        advance: dict[str, Any],
+    ) -> dict[str, Any]:
+        """把准备好的推进结果写入当前事务；提交权交给 OperationCoordinator。"""
+        context = {**session.context, "results": [*advance["results"], result]}
+        session.current_index += 1
         payload: dict[str, Any] = {
             "session_id": session.id,
             "question_id": question_id,
-            "recorded": True,  # 全程无反馈：只回执已记录，不透露分数/对错
+            "recorded": True,
             "record_id": record_id,
         }
-        if session.current_index < len(session.quiz_order):
-            next_payload = await self._ask_interview_question(db, session)
+        if not advance["finished"]:
+            next_question = advance["question"]
+            variants = dict(context.get("variants") or {})
+            variants[str(next_question.id)] = advance["variant"]
+            asked_at = dict(context.get("asked_at") or {})
+            asked_at[str(next_question.id)] = advance["asked_at"]
+            context.update(variants=variants, asked_at=asked_at)
+            session.state = SessionState.INTERVIEW_ANSWER.value
+            session.active_agent = self.interviewer.name
+            session.current_question_id = next_question.id
+            next_payload = {
+                "session_id": session.id,
+                "state": session.state,
+                "active_agent": session.active_agent,
+                "progress": f"{session.current_index + 1}/{len(session.quiz_order)}",
+                "question_id": next_question.id,
+                "variant_stem": advance["variant"],
+                "followup": (context.get("followup") or {}).get(str(next_question.id)),
+                "asked_at": advance["asked_at"],
+            }
             payload["finished"] = False
             payload["next_question"] = next_payload
         else:
-            self.workflow.transition(db, session, SessionState.INTERVIEW_REVIEW, self.assistant.name)
-            events.publish(self.assistant.name, "生成复盘报告…")
-            report = await self.assistant.build_review_report(db, session)
-            self.workflow.save_context(db, session, review_report=report)
+            report = advance["report"]
+            for item in report.get("per_question", []):
+                if item.get("question_id") == question_id and item.get("record_id") is None:
+                    item["record_id"] = record_id
+            context["review_report"] = report
+            session.state = SessionState.INTERVIEW_REVIEW.value
+            session.active_agent = self.assistant.name
             payload["finished"] = True
             payload["state"] = session.state
+        session.context = context
+        session.updated_at = datetime.now(timezone.utc)
+        db.add(session)
         return payload
 
     # ------------------------------------------------------------------

@@ -177,6 +177,84 @@ class TestDifferentKeysRace:
 # ---------------------------------------------------------------------------
 
 class TestFailureRetry:
+    def test_interview_next_question_failure_can_retry_same_submission(
+        self, client, db, seed_questions, fake_llm, monkeypatch
+    ):
+        """回答已评分但下一题生成失败：会话仍停在原题，同键重试只记录一次。"""
+        _set_score(fake_llm, 82)
+        seed_questions(3)
+        created = client.post("/api/sessions", json={"mode": "interview", "count": 3}).json()
+        sid = created["session_id"]
+        first_question_id = created["first_question"]["question_id"]
+
+        from llm import llm_router
+
+        original_chat = fake_llm.chat
+        failed = False
+
+        async def fail_next_question_once(messages, **kwargs):
+            nonlocal failed
+            system = messages[0]["content"] if messages else ""
+            if "改写成自然的面试官口吻" in system and not failed:
+                failed = True
+                raise TimeoutError("模拟下一题生成超时")
+            return await original_chat(messages, **kwargs)
+
+        monkeypatch.setattr(llm_router, "chat", fail_next_question_once)
+        body = {"answer": "面试作答。", "idempotency_key": "k-interview-next"}
+
+        with pytest.raises(TimeoutError, match="模拟下一题生成超时"):
+            client.post(f"/api/sessions/{sid}/answer", json=body)
+
+        info = client.get(f"/api/sessions/{sid}").json()
+        assert info["state"] == "INTERVIEW_ANSWER"
+        assert info["current_question_id"] == first_question_id
+        assert client.get(f"/api/sessions/{sid}/current").json()["question_id"] == first_question_id
+
+        retried = client.post(f"/api/sessions/{sid}/answer", json=body)
+        assert retried.status_code == 200
+        replayed = client.post(f"/api/sessions/{sid}/answer", json=body)
+        assert replayed.status_code == 200
+        assert replayed.json() == retried.json()
+        db.expire_all()
+        assert len(_records(db, sid)) == 1
+
+    def test_interview_next_question_failure_can_retry_same_skip(
+        self, client, db, seed_questions, fake_llm, monkeypatch
+    ):
+        """跳过时下一题生成失败：不提前记失败记录，同键重试只推进一次。"""
+        seed_questions(3)
+        created = client.post("/api/sessions", json={"mode": "interview", "count": 3}).json()
+        sid = created["session_id"]
+        first_question_id = created["first_question"]["question_id"]
+
+        from llm import llm_router
+
+        original_chat = fake_llm.chat
+        failed = False
+
+        async def fail_next_question_once(messages, **kwargs):
+            nonlocal failed
+            system = messages[0]["content"] if messages else ""
+            if "改写成自然的面试官口吻" in system and not failed:
+                failed = True
+                raise TimeoutError("模拟跳过后的下一题生成超时")
+            return await original_chat(messages, **kwargs)
+
+        monkeypatch.setattr(llm_router, "chat", fail_next_question_once)
+        body = {"idempotency_key": "k-interview-skip-next"}
+
+        with pytest.raises(TimeoutError, match="模拟跳过后的下一题生成超时"):
+            client.post(f"/api/sessions/{sid}/skip", json=body)
+
+        assert client.get(f"/api/sessions/{sid}/current").json()["question_id"] == first_question_id
+        retried = client.post(f"/api/sessions/{sid}/skip", json=body)
+        assert retried.status_code == 200
+        replayed = client.post(f"/api/sessions/{sid}/skip", json=body)
+        assert replayed.json() == retried.json()
+        db.expire_all()
+        assert len(_records(db, sid)) == 1
+
     def test_llm_timeout_retry_not_double_counted(self, client, db, seed_questions, fake_llm, monkeypatch):
         """LLM 超时：操作标记 FAILED（LLM_TIMEOUT），同键重试成功且统计只计一次。"""
         _set_score(fake_llm, 80)
@@ -264,6 +342,36 @@ class TestFailureRetry:
 # ---------------------------------------------------------------------------
 
 class TestRestartRecovery:
+    def test_interview_scoring_state_is_restored_before_retry(self, client, db, seed_questions, fake_llm):
+        """评分期间进程中断：启动恢复把会话放回等待回答态，同键可以继续。"""
+        _set_score(fake_llm, 80)
+        seed_questions(3)
+        created = client.post("/api/sessions", json={"mode": "interview", "count": 3}).json()
+        sid = created["session_id"]
+
+        session = db.get(Session, sid)
+        session.state = "INTERVIEW_SCORE"
+        db.add(session)
+        db.add(WorkflowOperation(
+            idempotency_key="k-recover-interview",
+            session_id=sid,
+            question_id=session.current_question_id,
+            question_index=session.current_index,
+            operation_type="answer",
+            status="RUNNING",
+        ))
+        db.commit()
+
+        database.recover_interrupted_operations()
+        info = client.get(f"/api/sessions/{sid}").json()
+        assert info["state"] == "INTERVIEW_ANSWER"
+
+        response = client.post(
+            f"/api/sessions/{sid}/answer",
+            json={"answer": "恢复后的作答。", "idempotency_key": "k-recover-interview"},
+        )
+        assert response.status_code == 200
+
     def test_running_operation_recovered_on_startup(self, client, db, seed_questions, fake_llm):
         """RUNNING 残留：提交返回 409 OPERATION_IN_PROGRESS；启动清理标记 FAILED 后可同键重试。"""
         _set_score(fake_llm, 80)

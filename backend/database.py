@@ -15,7 +15,7 @@ from sqlalchemy import event, text
 from sqlmodel import SQLModel, create_engine
 
 from config import settings
-from domain.session_state import TERMINAL_SESSION_STATES
+from domain.session_state import SessionState, TERMINAL_SESSION_STATES
 
 logger = logging.getLogger(__name__)
 
@@ -260,13 +260,26 @@ def recover_interrupted_operations() -> None:
     """
     from sqlmodel import Session as DBSession, select
 
-    from models import WorkflowOperation
+    from models import Session, WorkflowOperation
 
     with DBSession(engine) as db:
         stale = db.exec(
             select(WorkflowOperation).where(WorkflowOperation.status.in_(["PENDING", "RUNNING"]))
         ).all()
         for op in stale:
+            session = db.get(Session, op.session_id)
+            if (
+                session is not None
+                and op.operation_type in ("answer", "skip")
+                and session.current_index == op.question_index
+                and session.state == SessionState.INTERVIEW_SCORE.value
+            ):
+                # 评分阶段没有业务提交；进程中断后应回到原题等待回答，允许同键重试。
+                session.state = SessionState.INTERVIEW_ANSWER.value
+                session.current_question_id = op.question_id
+                session.active_agent = "面试官"
+                session.updated_at = datetime.now(timezone.utc)
+                db.add(session)
             op.status = "FAILED"
             op.error_code = "INTERRUPTED"
             op.updated_at = datetime.now(timezone.utc)

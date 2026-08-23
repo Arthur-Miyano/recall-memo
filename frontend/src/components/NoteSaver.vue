@@ -5,7 +5,8 @@
 //   if (sel) { e.preventDefault(); saver.open(e.clientX, e.clientY, sel, 来源题干) }
 // 菜单内容：选中句子摘要 + 目标笔记列表（点击即存入）+ ＋ 新笔记
 import { ref } from 'vue'
-import { getNotes, createNote, appendNote } from '../api'
+import { getNotes, createNote, appendNote, offline } from '../api'
+import { OFFLINE_WRITE_TIP } from '../utils/offlineGuard'
 
 const visible = ref(false)
 const pos = ref({ x: 0, y: 0 })
@@ -38,6 +39,7 @@ function close() { visible.value = false }
 
 async function saveTo(note) {
   if (busy.value || savedTip.value) return
+  if (offline.value) { alert(OFFLINE_WRITE_TIP); return }
   busy.value = true
   try {
     await appendNote(note.id, text.value, source.value)
@@ -53,6 +55,7 @@ async function saveTo(note) {
 
 async function saveToNew() {
   if (busy.value || savedTip.value) return
+  if (offline.value) { alert(OFFLINE_WRITE_TIP); return }
   busy.value = true
   try {
     // 新笔记默认以来源题干（截 20 字）命名，方便日后回溯
@@ -84,10 +87,10 @@ defineExpose({ open, close })
         <template v-else>
           <button
             v-for="n in notes" :key="n.id"
-            class="ns-item" :disabled="busy" @click="saveTo(n)"
+            class="ns-item" :disabled="busy || offline" @click="saveTo(n)"
           >{{ n.title }}</button>
           <div v-if="!notes.length" class="ns-dim">还没有笔记，存一篇新的 ↓</div>
-          <button class="ns-item ns-new" :disabled="busy" @click="saveToNew">＋ 新笔记</button>
+          <button class="ns-item ns-new" :disabled="busy || offline" @click="saveToNew">＋ 新笔记</button>
         </template>
       </template>
     </div>

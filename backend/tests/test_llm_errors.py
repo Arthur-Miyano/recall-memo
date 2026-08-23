@@ -94,6 +94,18 @@ class TestClassifyError:
         with pytest.raises(LLMRateLimitError):
             await client.chat(_MESSAGES)
 
+    async def test_chat_propagates_unexpected_programming_error(self):
+        """未知程序异常不是临时 Provider 故障，不应包装后重试。"""
+        client = DeepSeekClient(api_key="dk-x")
+
+        class BrokenTransport:
+            async def post(self, *args, **kwargs):
+                raise TypeError("调用参数错误")
+
+        client._client = BrokenTransport()
+        with pytest.raises(TypeError, match="调用参数错误"):
+            await client.chat(_MESSAGES)
+
 
 # ---------------------------------------------------------------------------
 # LLMRouter：切换决策 / 重试上限 / 统一截止时间

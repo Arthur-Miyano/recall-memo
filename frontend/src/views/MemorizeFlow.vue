@@ -25,7 +25,7 @@ const router = useRouter()
 // 会话态与推进逻辑全部由 composable 产出；本文件只留展示态
 const {
   loadError, quizzing, kwShow, fbShow,
-  topLeft, topRight, questions, quiz, answerText, feedback, finished, summary, busy,
+  topLeft, topRight, questions, quiz, answerText, feedback, finished, summary, busy, canWrite,
   startQuiz, submitQuiz, nextQuestion, toggleKw,
 } = useMemorizeSession()
 
@@ -128,7 +128,7 @@ async function exportCard() {
           <div class="answer" @contextmenu="onNoteSelect($event, q.title)"><span class="lbl">标准答案</span>{{ q.answer }}</div>
         </div>
         <div class="mem-actions">
-          <button class="btn" :disabled="!!busy" @click="startQuiz">我记好了，开始考核 →</button>
+          <button class="btn" :disabled="!canWrite" @click="startQuiz">我记好了，开始考核 →</button>
           <span class="iv-note">// 考核时将打乱顺序，只显示变体题干；点击题目卡片可放大逐题观看</span>
         </div>
         </template>
@@ -147,7 +147,7 @@ async function exportCard() {
         </div>
         <textarea ref="answerEl" class="iv-input" :placeholder="m.quiz.placeholder" v-model="answerText" :disabled="fbShow" @input="fitAnswer"></textarea>
         <div class="iv-actions">
-          <button class="btn" :disabled="!!busy || fbShow" @click="submitQuiz">{{ busy || '提交回答' }}</button>
+          <button class="btn" :disabled="!canWrite || fbShow" @click="submitQuiz">{{ busy || '提交回答' }}</button>
         </div>
 
         <!-- 即时反馈面板 -->

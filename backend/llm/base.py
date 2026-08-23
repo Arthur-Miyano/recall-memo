@@ -54,7 +54,7 @@ class BaseLLMClient(ABC):
             )
         return self._client
 
-    def _classify_error(self, exc: Exception) -> LLMError:
+    def _classify_error(self, exc: Exception) -> Exception:
         """把底层 httpx/SDK 异常映射为统一分类（修复方案 §4.1）。
 
         映射规则：超时→LLMTimeoutError；401/403→认证；429→限流；
@@ -81,8 +81,8 @@ class BaseLLMClient(ABC):
         if isinstance(exc, httpx.TransportError):
             logger.warning("Provider %s 网络连接失败", self.name, exc_info=True)
             return LLMTemporaryError(f"Provider {self.name} 网络连接失败")
-        logger.warning("Provider %s 调用出现未预期异常", self.name, exc_info=True)
-        return LLMTemporaryError(f"Provider {self.name} 调用失败（{type(exc).__name__}）")
+        logger.exception("Provider %s 调用出现未预期异常", self.name)
+        return exc
 
     async def chat(self, messages: list[dict[str, str]], **kwargs: Any) -> str:
         """发送对话请求，返回模型的文本回复。失败抛统一分类的 LLMError。"""
@@ -95,7 +95,10 @@ class BaseLLMClient(ABC):
         except Exception as exc:
             # 失败调用也记账：官网对失败请求同样计费（至少输入部分），按输入长度估算落库
             record_attempt(self.name, self.model, messages)
-            raise self._classify_error(exc) from exc
+            classified = self._classify_error(exc)
+            if classified is exc:
+                raise
+            raise classified from exc
         try:
             data = resp.json()
             content = self._extract_content(data)

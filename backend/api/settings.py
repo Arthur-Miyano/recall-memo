@@ -126,18 +126,22 @@ def update_llm_settings(req: LLMSettingsRequest):
     if req.api_key:
         env_var = PROVIDER_ENV_VAR[provider]
         env_updates[env_var] = req.api_key
-        os.environ[env_var] = req.api_key
-        setattr(settings, PROVIDER_KEY_ATTR[provider], req.api_key)
     if req.model:
         env_updates["LLM_MODEL"] = req.model
-        settings.llm_model = req.model
 
     # 所选 Provider 提到优先级第一位
     rest = [p for p in settings.provider_priority if p != provider]
     priority = ",".join([provider, *rest])
     env_updates["LLM_PROVIDER_PRIORITY"] = priority
-    settings.llm_provider_priority = priority
 
+    # 先持久化；写盘失败时不改变当前进程配置。
     _write_env(env_updates)
+    for name, value in env_updates.items():
+        os.environ[name] = value
+    if req.api_key:
+        setattr(settings, PROVIDER_KEY_ATTR[provider], req.api_key)
+    if req.model:
+        settings.llm_model = req.model
+    settings.llm_provider_priority = priority
     llm_router.reload()
     return _current_payload()
