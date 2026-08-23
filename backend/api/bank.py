@@ -16,7 +16,10 @@ from agents import importer
 from agents.base import SCORE_PASS_THRESHOLD
 from api.deps import get_db
 from application.importer import IMPORT_JOBS, job_view, new_job, run_import, run_import_job
-from infrastructure.documents import DocumentParseError, decode_source_text
+from application.uploads import (
+    UploadRejectedError, read_upload, read_upload_batch, validate_document_upload,
+)
+from infrastructure.documents import decode_source_text
 from models import Question, QuestionFocus, QuestionGroup, Record, RetryQueueItem, Session
 
 router = APIRouter(prefix="/bank", tags=["bank"])
@@ -352,16 +355,15 @@ async def bank_import_file(
 ):
     """文件录入题库：提取文本后走与 /import 完全相同的清洗管线 run_import。
 
-    解析（含 PDF）是 CPU 活，统一放工作线程（infrastructure/documents.py），
-    避免大文件阻塞事件循环——与后台任务路径同一入口，不会再出现一处线程化一处遗漏。
+    上传读取与策略校验统一走 application/uploads.py（§5.1）：分块读取、大小/扩展名/
+    压缩签名限制；解析（含 PDF）是 CPU 活，统一放工作线程（infrastructure/documents.py），
+    避免大文件阻塞事件循环。校验/解析失败由 main.py 全局处理器返回稳定 4xx 错误结构。
     """
-    raw = await file.read()
+    raw = await read_upload(file)
     if not raw:
         raise HTTPException(status_code=400, detail="文件为空")
-    try:
-        text, force_pdf = await asyncio.to_thread(decode_source_text, file.filename or "", raw)
-    except DocumentParseError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    validate_document_upload(file.filename or "", raw)
+    text, force_pdf = await asyncio.to_thread(decode_source_text, file.filename or "", raw)
     force = force_llm_extract or force_pdf
     return await run_import(text, dedupe, db, max_questions, force)
 
@@ -376,18 +378,25 @@ async def bank_import_job_create(
 ):
     """创建后台录入任务：支持多文件 + 粘贴文本，立即返回 job_id，前端轮询进度。
 
+    上传读取与策略校验统一走 application/uploads.py（§5.1）：批数/单文件/总大小超限
+    整批拒绝（稳定 4xx）；单文件类型/签名不支持记为该文件的 file_errors，不拖垮其他文件。
     任务在后台协程执行，关闭面板/切页面不影响录入；重开面板用 GET latest 重新挂上。
     """
-    sources: list[tuple[str, bytes]] = []
-    for f in files or []:
-        raw = await f.read()
-        if raw:
-            sources.append((f.filename or "未命名文件", raw))
-    if not sources and not (text and text.strip()):
+    sources = await read_upload_batch(files or [])
+    accepted: list[tuple[str, bytes]] = []
+    file_errors: list[dict[str, str]] = []
+    for name, raw in sources:
+        try:
+            validate_document_upload(name, raw)
+        except UploadRejectedError as exc:
+            file_errors.append({"file": name, "reason": str(exc)})
+        else:
+            accepted.append((name, raw))
+    if not accepted and not file_errors and not (text and text.strip()):
         raise HTTPException(status_code=400, detail="没有可录入的内容（未选择文件也未粘贴文本）")
-    label = "、".join(n for n, _ in sources) or "粘贴文本"
+    label = "、".join(n for n, _ in accepted) or "粘贴文本"
     job = new_job(label)
-    asyncio.create_task(run_import_job(job, sources, text, dedupe))
+    asyncio.create_task(run_import_job(job, accepted, text, dedupe, file_errors=file_errors))
     return {"job_id": job["id"], "status": job["status"]}
 
 

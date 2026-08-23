@@ -7,20 +7,38 @@
 import io
 import os
 
+from config import settings
+
 # 按文本读取的扩展名；.pdf 走 pypdf 提取
 TEXT_EXTS = {".md", ".txt", ".json"}
 
 
 class DocumentParseError(ValueError):
-    """上传文档无法解析；不携带任何 HTTP 传输层语义。"""
+    """上传文档无法解析；不携带任何 HTTP 传输层语义。
+
+    code 为稳定错误码（main.py 全局处理器映射为 4xx + 稳定错误结构）。
+    """
+
+    def __init__(self, message: str, code: str = "INVALID_DOCUMENT") -> None:
+        super().__init__(message)
+        self.code = code
+        self.status = 400
 
 
 def extract_pdf_text(raw: bytes) -> str:
-    """pypdf 提取 PDF 全文（逐页拼接）。失败/无文本抛 DocumentParseError。"""
+    """pypdf 提取 PDF 全文（逐页拼接）。失败/无文本/页数超限抛 DocumentParseError。"""
     from pypdf import PdfReader  # 延迟导入：PDF 是可选路径，不影响文本导入
     try:
         reader = PdfReader(io.BytesIO(raw))
+        page_count = len(reader.pages)
+        if page_count > settings.pdf_max_pages:
+            raise DocumentParseError(
+                f"PDF 页数超过上限（{page_count} 页 > {settings.pdf_max_pages} 页），请拆分后导入",
+                code="PDF_TOO_MANY_PAGES",
+            )
         pages = [(page.extract_text() or "") for page in reader.pages]
+    except DocumentParseError:
+        raise
     except Exception as exc:  # 损坏/加密/非 PDF 内容等统一归为无法解析
         raise DocumentParseError(f"PDF 解析失败：{exc}") from exc
     text = "\n\n".join(p for p in pages if p.strip())

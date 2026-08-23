@@ -7,10 +7,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlmodel import Session as DBSession, select
 
-from agents import StateError, orchestrator
+from agents import OperationConflictError, StateError, orchestrator
 from agents.orchestrator import get_session_info
 from api.deps import get_db
-from llm.router import LLMProviderUnavailableError
 from models import Question, RetryQueueItem, Session
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
@@ -26,18 +25,24 @@ class AnswerRequest(BaseModel):
     answer: str
     # 调用方标记的开始作答时间（面试模式时间压力：2 分钟内必须开始作答）
     started_at: Optional[datetime] = None
+    # 客户端幂等键：一次提交生成一个，失败重试必须复用同键（后端凭此去重/重放结果）
+    idempotency_key: Optional[str] = None
+
+
+class SkipRequest(BaseModel):
+    idempotency_key: Optional[str] = None  # 幂等键，语义同 AnswerRequest
 
 
 def _handle_state_error(exc: StateError) -> HTTPException:
     return HTTPException(status_code=400, detail=str(exc))
 
 
-def _handle_llm_error(exc: LLMProviderUnavailableError) -> HTTPException:
-    """LLM 全部不可用（超时/限流/未配置 Key）：503 + 可读的降级提示，不抛裸 500。"""
-    return HTTPException(
-        status_code=503,
-        detail=f"LLM 服务暂不可用（{exc}）。请检查设置页的模型与 API Key 配置，或稍后重试",
-    )
+def _handle_operation_conflict(exc: OperationConflictError) -> HTTPException:
+    """幂等/并发冲突：409 + 稳定机器错误码（OPERATION_IN_PROGRESS / ANSWER_ALREADY_SUBMITTED）。
+
+    LLM 错误不在此处理：由全局异常处理器返回稳定结构（main.py，§4.2）。
+    """
+    return HTTPException(status_code=409, detail={"code": exc.code, "message": str(exc)})
 
 
 @router.post("")
@@ -49,8 +54,6 @@ async def create_session(req: CreateSessionRequest, db: DBSession = Depends(get_
         )
     except StateError as exc:
         raise _handle_state_error(exc) from exc
-    except LLMProviderUnavailableError as exc:
-        raise _handle_llm_error(exc) from exc
 
 
 @router.post("/{session_id}/start_quiz")
@@ -60,8 +63,6 @@ async def start_quiz(session_id: int, db: DBSession = Depends(get_db)):
         return await orchestrator.run("start_quiz", db=db, session_id=session_id)
     except StateError as exc:
         raise _handle_state_error(exc) from exc
-    except LLMProviderUnavailableError as exc:
-        raise _handle_llm_error(exc) from exc
 
 
 @router.get("/{session_id}/current")
@@ -75,25 +76,34 @@ async def current_question(session_id: int, db: DBSession = Depends(get_db)):
 
 @router.post("/{session_id}/answer")
 async def submit_answer(session_id: int, req: AnswerRequest, db: DBSession = Depends(get_db)):
-    """提交回答：考核模式即时返回评分；面试模式只回执"已记录"并推进下一题。"""
+    """提交回答：考核模式即时返回评分；面试模式只回执"已记录"并推进下一题。
+
+    携带 idempotency_key 时：同键重放返回已保存结果；冲突返回 409 + 稳定错误码。
+    """
     try:
         return await orchestrator.run(
             "answer", db=db, session_id=session_id, answer=req.answer,
             started_at=req.started_at.isoformat() if req.started_at else None,
+            idempotency_key=req.idempotency_key,
         )
     except StateError as exc:
         raise _handle_state_error(exc) from exc
-    except LLMProviderUnavailableError as exc:
-        raise _handle_llm_error(exc) from exc
+    except OperationConflictError as exc:
+        raise _handle_operation_conflict(exc) from exc
 
 
 @router.post("/{session_id}/skip")
-async def skip_question(session_id: int, db: DBSession = Depends(get_db)):
-    """面试跳过：标记为失败（总分 0），不消耗补答机会、不给补答，推进下一题。"""
+async def skip_question(session_id: int, req: Optional[SkipRequest] = None, db: DBSession = Depends(get_db)):
+    """面试跳过：标记为失败（总分 0），不消耗补答机会、不给补答，推进下一题。支持幂等键。"""
     try:
-        return await orchestrator.run("skip", db=db, session_id=session_id)
+        return await orchestrator.run(
+            "skip", db=db, session_id=session_id,
+            idempotency_key=req.idempotency_key if req else None,
+        )
     except StateError as exc:
         raise _handle_state_error(exc) from exc
+    except OperationConflictError as exc:
+        raise _handle_operation_conflict(exc) from exc
 
 
 @router.get("/{session_id}/review")
@@ -103,8 +113,6 @@ async def review_report(session_id: int, db: DBSession = Depends(get_db)):
         return await orchestrator.run("review", db=db, session_id=session_id)
     except StateError as exc:
         raise _handle_state_error(exc) from exc
-    except LLMProviderUnavailableError as exc:
-        raise _handle_llm_error(exc) from exc
 
 
 @router.get("/retry-queue")

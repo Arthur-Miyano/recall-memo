@@ -1,17 +1,28 @@
 # -*- coding: utf-8 -*-
 """总控 Agent（Orchestrator）：手写状态机，解析 API 意图，编排其余 Agent 的调用链。"""
-import asyncio
 import random
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional
+from uuid import uuid4
 
+from sqlalchemy import update
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session as DBSession, select
 
 import events
 from database import engine
 from llm import llm_router
-from models import Question, Record, RetryQueueItem, Session
+from llm.errors import (
+    LLMAuthenticationError,
+    LLMOutputValidationError,
+    LLMRateLimitError,
+    LLMRequestError,
+    LLMTemporaryError,
+    LLMTimeoutError,
+)
+from llm.router import LLMProviderUnavailableError
+from models import OperationStatus, OperationType, Question, Record, RetryQueueItem, Session, WorkflowOperation
 
 from .assistant import AssistantAgent
 from .base import BaseAgent
@@ -40,6 +51,17 @@ class SessionState(str, Enum):
 
 class StateError(RuntimeError):
     """非法的状态跳转或会话状态不满足操作要求。"""
+
+
+class OperationConflictError(RuntimeError):
+    """幂等/并发冲突：携带稳定错误码（API 层映射为 409）。
+
+    code 取值：OPERATION_IN_PROGRESS（同题操作进行中）/ ANSWER_ALREADY_SUBMITTED（会话已推进）。
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 # 各模式的题量限制，见文档 2.3
@@ -108,6 +130,149 @@ class OrchestratorAgent(BaseAgent):
         db.add(session)
         db.commit()
         db.refresh(session)
+
+    # ------------------------------------------------------------------
+    # 幂等操作协调（修复方案 §3.3）：短事务占位 → 不持事务执行 → 原子收尾
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _bump_version(db: DBSession, session: Session) -> bool:
+        """乐观锁条件更新：仅当版本与状态均未变时 version+1；失败表示已被并发请求推进。"""
+        result = db.execute(
+            update(Session)
+            .where(
+                Session.id == session.id,
+                Session.version == session.version,
+                Session.state == session.state,
+            )
+            .values(version=Session.version + 1, updated_at=datetime.now(timezone.utc))
+        )
+        return result.rowcount == 1
+
+    @staticmethod
+    def _running_operation(db: DBSession, session_id: int) -> Optional[WorkflowOperation]:
+        """会话内处于 PENDING/RUNNING 的操作（同一会话的写操作必须串行）。"""
+        return db.exec(
+            select(WorkflowOperation)
+            .where(WorkflowOperation.session_id == session_id)
+            .where(WorkflowOperation.status.in_([OperationStatus.PENDING.value, OperationStatus.RUNNING.value]))
+        ).first()
+
+    def _resolve_conflict(self, db: DBSession, session_id: int) -> OperationConflictError:
+        """条件更新失败后重读分类：有进行中操作 → OPERATION_IN_PROGRESS；否则会话已被推进。"""
+        if self._running_operation(db, session_id) is not None:
+            return OperationConflictError("OPERATION_IN_PROGRESS", "当前题目有操作正在进行中，请勿重复提交")
+        return OperationConflictError("ANSWER_ALREADY_SUBMITTED", "本题已提交过，会话已推进")
+
+    @staticmethod
+    def _classify_operation_error(exc: Exception) -> str:
+        """操作失败的稳定分类（写入 op.error_code，供排障与安全重试决策），与 llm/errors 异常体系衔接。"""
+        if isinstance(exc, StateError):
+            return "STATE_ERROR"
+        if isinstance(exc, (LLMTimeoutError, TimeoutError)):
+            return "LLM_TIMEOUT"
+        if isinstance(exc, LLMRateLimitError):
+            return "LLM_RATE_LIMITED"
+        if isinstance(exc, LLMAuthenticationError):
+            return "LLM_AUTH_FAILED"
+        if isinstance(exc, LLMRequestError):
+            return "LLM_REQUEST_INVALID"
+        if isinstance(exc, LLMOutputValidationError):
+            return "LLM_OUTPUT_INVALID"
+        if isinstance(exc, (LLMTemporaryError, LLMProviderUnavailableError)):
+            return "LLM_UNAVAILABLE"
+        return "INTERNAL_ERROR"
+
+    async def _run_operation(
+        self,
+        db: DBSession,
+        session: Session,
+        operation_type: str,
+        idempotency_key: Optional[str],
+        expected_states: set[str],
+        executor: Any,
+    ) -> dict[str, Any]:
+        """幂等执行一次会话写操作。
+
+        流程（修复方案 §3.3）：
+        1. 同键重放：已成功 → 直接返回已保存结果；进行中 → OPERATION_IN_PROGRESS；
+           失败 → 校验会话仍停在原题后安全重试（retry_count+1）；
+        2. 短事务占位：建 RUNNING 操作行 + WHERE id/version/state 条件更新会话版本；
+        3. 提交后不持事务执行 executor（LLM 调用 + 最终原子写库），返回响应载荷；
+        4. 成功载荷快照进 op.result；任何失败回滚并把操作标记 FAILED（可同键重试）。
+        """
+        # 无键直连（旧客户端/测试）：服务端生成一次性键，等价于不做幂等
+        key = idempotency_key or f"srv-{uuid4().hex}"
+        now = datetime.now(timezone.utc)
+        op = db.exec(
+            select(WorkflowOperation).where(WorkflowOperation.idempotency_key == key)
+        ).first()
+        if op is not None:
+            if op.status == OperationStatus.SUCCEEDED.value:
+                return op.result
+            if op.status in (OperationStatus.PENDING.value, OperationStatus.RUNNING.value):
+                db.rollback()  # 释放读事务，避免阻塞进行中的写方
+                raise OperationConflictError("OPERATION_IN_PROGRESS", "相同操作正在进行中，请勿重复提交")
+            # FAILED 重试：会话必须仍停在原题，否则视为已推进
+            if session.state not in expected_states or session.current_index != op.question_index:
+                db.rollback()
+                raise OperationConflictError("ANSWER_ALREADY_SUBMITTED", "会话已推进，本题已有作答结果")
+            op.status = OperationStatus.RUNNING.value
+            op.error_code = None
+            op.retry_count += 1
+            op.updated_at = now
+            db.add(op)
+        else:
+            # 新操作：先挡住明显的进行中冲突，再建行并以条件更新占位
+            if self._running_operation(db, session.id) is not None:
+                db.rollback()
+                raise OperationConflictError("OPERATION_IN_PROGRESS", "当前题目有操作正在进行中，请勿重复提交")
+            question_id = None
+            if session.quiz_order and session.current_index < len(session.quiz_order):
+                question_id = session.quiz_order[session.current_index]
+            op = WorkflowOperation(
+                idempotency_key=key,
+                session_id=session.id,
+                question_id=question_id,
+                question_index=session.current_index,
+                operation_type=operation_type,
+                status=OperationStatus.RUNNING.value,
+            )
+            db.add(op)
+        if not self._bump_version(db, session):
+            db.rollback()
+            raise self._resolve_conflict(db, session.id)
+        try:
+            db.commit()
+        except IntegrityError:
+            # 并发下同键插入撞唯一索引：以库中已有的那一条为准
+            db.rollback()
+            existing = db.exec(
+                select(WorkflowOperation).where(WorkflowOperation.idempotency_key == key)
+            ).first()
+            if existing is not None and existing.status == OperationStatus.SUCCEEDED.value:
+                return existing.result
+            db.rollback()
+            raise OperationConflictError("OPERATION_IN_PROGRESS", "相同操作正在进行中，请勿重复提交")
+        db.refresh(session)
+        db.refresh(op)
+
+        try:
+            payload = await executor(session, op)
+        except Exception as exc:
+            db.rollback()
+            op.status = OperationStatus.FAILED.value
+            op.error_code = self._classify_operation_error(exc)
+            op.updated_at = datetime.now(timezone.utc)
+            db.add(op)
+            db.commit()
+            raise
+        op.status = OperationStatus.SUCCEEDED.value
+        op.result = payload
+        op.updated_at = datetime.now(timezone.utc)
+        db.add(op)
+        db.commit()
+        return payload
 
     # ------------------------------------------------------------------
     # 创建会话：按模式分发
@@ -268,38 +433,65 @@ class OrchestratorAgent(BaseAgent):
         }
 
     async def submit_answer(
-        self, db: DBSession, session_id: int, answer: str, started_at: Optional[str] = None
+        self, db: DBSession, session_id: int, answer: str, started_at: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
     ) -> dict[str, Any]:
-        """提交回答：考核模式即时反馈；面试模式只回执"已记录"并推进。"""
+        """提交回答：考核模式即时反馈；面试模式只回执"已记录"并推进。幂等键去重，冲突返回稳定错误码。"""
         session = self._get_session(db, session_id)
         if session.state == SessionState.INTERVIEW_ANSWER.value:
-            return await self._interview_answer(db, session, answer, started_at)
+            return await self._run_operation(
+                db, session, OperationType.ANSWER.value, idempotency_key,
+                {SessionState.INTERVIEW_ANSWER.value},
+                lambda s, op: self._interview_answer(db, s, answer, started_at, op),
+            )
         if session.state in (SessionState.MEMORIZE_QUIZ.value, SessionState.REVIEW_QUIZ.value):
-            return await self._quiz_answer(db, session, answer)
+            return await self._run_operation(
+                db, session, OperationType.ANSWER.value, idempotency_key,
+                {SessionState.MEMORIZE_QUIZ.value, SessionState.REVIEW_QUIZ.value},
+                lambda s, op: self._quiz_answer(db, s, answer, op),
+            )
+        # 状态不匹配但有进行中操作（如面试评分中 INTERVIEW_SCORE）：按并发冲突处理，返回稳定错误码
+        if self._running_operation(db, session.id) is not None:
+            db.rollback()
+            raise OperationConflictError("OPERATION_IN_PROGRESS", "当前题目有操作正在进行中，请勿重复提交")
         raise StateError(f"当前状态 {session.state} 不能提交回答")
 
-    async def _quiz_answer(self, db: DBSession, session: Session, answer: str) -> dict[str, Any]:
-        """记忆训练/回忆模式答题：评分+写库并行，即时返回评分并推进到下一题。"""
+    async def _quiz_answer(self, db: DBSession, session: Session, answer: str, op: WorkflowOperation) -> dict[str, Any]:
+        """记忆训练/回忆模式答题：LLM 阶段（不持事务）→ 原子写库（记录+队列+统计+推进），即时返回评分。"""
         quiz_state = SessionState(session.state)
         question = self._current_question(db, session)
+        is_last = session.current_index + 1 >= len(session.quiz_order)
 
-        # 评分 Agent 评分 与 智能助理写入回答原文 并行（文档 3.2）
+        # LLM 阶段（不持有数据库事务）：评分 + 下一题变体预生成
         # with_annotation=False：即时反馈不展示标注版答案，省掉"逐字复制标答"的输出 token
         self._transition(db, session, quiz_state, self.grader.name)
         events.publish(self.grader.name, "判分中…")
-        score, record_id = await asyncio.gather(
-            self.grader.run(question, answer, with_annotation=False),
-            self.assistant.run(db, session_id=session.id, question_id=question.id, user_answer=answer),
-        )
-        # 评分完成后回填分数并聚合 daily_stats
-        self.assistant.fill_scores(db, record_id, score)
+        score = await self.grader.run(question, answer, with_annotation=False)
+        next_question = None
+        next_variant = None
+        if not is_last:
+            next_question = db.get(Question, session.quiz_order[session.current_index + 1])
+            self._transition(db, session, quiz_state, self.interviewer.name)
+            events.publish(self.interviewer.name, "出题中…")
+            next_variant = await self.interviewer.run(next_question, db)
 
-        # 记录本题结果到会话上下文
+        # 原子写库：答题记录（绑定 operation_id）+ 评分回填 + 待补答队列 + 日统计 + 会话推进，一次提交
+        record_id = self.assistant.log_answer(db, session.id, question.id, answer, operation_id=op.id, commit=False)
+        self.assistant.fill_scores(db, record_id, score, commit=False)
         results = list(session.context.get("results") or [])
         results.append({"question_id": question.id, "user_answer": answer, "record_id": record_id, "score": score})
-        session.context = {**session.context, "results": results}
-
+        context = {**session.context, "results": results}
+        if next_question is not None:
+            variants = dict(session.context.get("variants") or {})
+            variants[str(next_question.id)] = next_variant
+            context["variants"] = variants
+        session.context = context
         session.current_index += 1
+        session.updated_at = datetime.now(timezone.utc)
+        if is_last:
+            # 全部答完：状态回 IDLE
+            session.state = SessionState.IDLE.value
+            session.active_agent = self.name
         db.add(session)
         db.commit()
 
@@ -310,22 +502,14 @@ class OrchestratorAgent(BaseAgent):
             "standard_answer": question.answer,
             "record_id": record_id,
         }
-
-        if session.current_index < len(session.quiz_order):
-            # 还有下一题：面试官生成新变体，继续考核
-            next_question = db.get(Question, session.quiz_order[session.current_index])
-            self._transition(db, session, quiz_state, self.interviewer.name)
-            variant = await self.interviewer.run(next_question, db)
-            self._store_variant(db, session, next_question.id, variant)
+        if not is_last:
             payload["finished"] = False
             payload["next_question"] = {
                 "question_id": next_question.id,
-                "variant_stem": variant,
+                "variant_stem": next_variant,
                 "progress": f"{session.current_index + 1}/{len(session.quiz_order)}",
             }
         else:
-            # 全部答完：输出总结，状态回 IDLE
-            self._transition(db, session, SessionState.IDLE, self.name)
             payload["finished"] = True
             payload["state"] = session.state
             payload["summary"] = self._build_summary(session)
@@ -375,22 +559,21 @@ class OrchestratorAgent(BaseAgent):
         }
 
     async def _interview_answer(
-        self, db: DBSession, session: Session, answer: str, started_at: Optional[str]
+        self, db: DBSession, session: Session, answer: str, started_at: Optional[str], op: WorkflowOperation
     ) -> dict[str, Any]:
-        """面试答题：评分照常异步算好存库，但响应只回执"已记录"+ 推进下一题。"""
+        """面试答题：LLM 评分（不持事务）→ 原子写库（记录+统计+推进），响应只回执"已记录"。"""
         question = db.get(Question, session.quiz_order[session.current_index])
         if question is None:
             raise StateError("当前题目在题库中不存在")
 
-        # 评分 Agent 与智能助理写库并行（INTERVIEW_SCORE，结果不透露给用户）
+        # LLM 阶段：评分照常异步算好（INTERVIEW_SCORE，结果不透露给用户）
         self._transition(db, session, SessionState.INTERVIEW_SCORE, self.grader.name)
         events.publish(self.grader.name, "判分中…")
-        score, record_id = await asyncio.gather(
-            self.grader.run(question, answer),
-            self.assistant.run(db, session_id=session.id, question_id=question.id, user_answer=answer),
-        )
-        self.assistant.fill_scores(db, record_id, score)
+        score = await self.grader.run(question, answer)
 
+        # 原子写库：答题记录 + 评分回填 + 待补答队列 + 日统计 + 会话推进，一次提交
+        record_id = self.assistant.log_answer(db, session.id, question.id, answer, operation_id=op.id, commit=False)
+        self.assistant.fill_scores(db, record_id, score, commit=False)
         results = list(session.context.get("results") or [])
         results.append({
             "question_id": question.id,
@@ -400,23 +583,35 @@ class OrchestratorAgent(BaseAgent):
             "skipped": False,
             "started_at": started_at,  # 调用方标记的开始作答时间（时间压力检测留给前端）
         })
-        self._save_context(db, session, results=results)
-
+        session.context = {**session.context, "results": results}
         session.current_index += 1
+        session.updated_at = datetime.now(timezone.utc)
         db.add(session)
         db.commit()
         return await self._interview_advance(db, session, question.id, record_id)
 
-    async def skip_question(self, db: DBSession, session_id: int) -> dict[str, Any]:
-        """面试跳过：标记为失败（总分 0），不消耗补答机会、不给补答，直接推进。"""
+    async def skip_question(self, db: DBSession, session_id: int, idempotency_key: Optional[str] = None) -> dict[str, Any]:
+        """面试跳过：标记为失败（总分 0），不消耗补答机会、不给补答，直接推进。幂等键去重。"""
         session = self._get_session(db, session_id)
         if session.state != SessionState.INTERVIEW_ANSWER.value:
+            # 状态不匹配但有进行中操作（如回答正在评分）：按并发冲突处理，返回稳定错误码
+            if self._running_operation(db, session.id) is not None:
+                db.rollback()
+                raise OperationConflictError("OPERATION_IN_PROGRESS", "当前题目有操作正在进行中，请勿重复提交")
             raise StateError(f"当前状态 {session.state} 不能跳过（仅面试作答中可跳过）")
+        return await self._run_operation(
+            db, session, OperationType.SKIP.value, idempotency_key,
+            {SessionState.INTERVIEW_ANSWER.value},
+            lambda s, op: self._skip_answer(db, s, op),
+        )
+
+    async def _skip_answer(self, db: DBSession, session: Session, op: WorkflowOperation) -> dict[str, Any]:
+        """跳过落库：失败记录 + 日统计 + 会话推进，一次原子提交（不消耗补答机会、不入待补答队列）。"""
         question = db.get(Question, session.quiz_order[session.current_index])
         if question is None:
             raise StateError("当前题目在题库中不存在")
 
-        record_id = self.assistant.log_skip(db, session.id, question.id)
+        record_id = self.assistant.log_skip(db, session.id, question.id, operation_id=op.id, commit=False)
         results = list(session.context.get("results") or [])
         results.append({
             "question_id": question.id,
@@ -425,9 +620,9 @@ class OrchestratorAgent(BaseAgent):
             "score": None,
             "skipped": True,
         })
-        self._save_context(db, session, results=results)
-
+        session.context = {**session.context, "results": results}
         session.current_index += 1
+        session.updated_at = datetime.now(timezone.utc)
         db.add(session)
         db.commit()
         return await self._interview_advance(db, session, question.id, record_id)

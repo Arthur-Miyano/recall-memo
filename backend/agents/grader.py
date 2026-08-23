@@ -6,8 +6,10 @@ from difflib import SequenceMatcher
 from typing import Any, Optional
 
 from models import Question
+from llm.errors import LLMOutputValidationError
 
 from .base import BaseAgent
+from .outputs import ScoreOutput, has_score_fields
 from .parsing import parse_json_object
 
 logger = logging.getLogger(__name__)
@@ -28,14 +30,6 @@ _SCORE_SYSTEM_PROMPT = (
     "你是严格的技术面试评分专家。根据用户回答对照标准答案进行评分，"
     "只输出一个 JSON 对象，不要输出任何其他文字、解释或 Markdown 代码块。"
 )
-
-
-def _clamp(value: Any, low: float = 0.0, high: float = 100.0) -> float:
-    """把得分收敛到 [low, high] 区间的浮点数。"""
-    try:
-        return max(low, min(high, float(value)))
-    except (TypeError, ValueError):
-        return low
 
 
 class GraderAgent(BaseAgent):
@@ -104,12 +98,27 @@ class GraderAgent(BaseAgent):
             {"role": "system", "content": _SCORE_SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
         ]
+        # 输出校验（修复方案 §4.3）：解析不出得分字段 → 受控重试一次，仍失败抛 LLMOutputValidationError
         _, content = await self.llm.chat(messages, temperature=0.2)
         parsed = parse_json_object(content, log_label="评分")
+        if not has_score_fields(parsed):
+            logger.warning("评分输出未包含得分字段，受控重试一次")
+            retry_messages = messages + [
+                {"role": "assistant", "content": content},
+                {"role": "user", "content": (
+                    "上一条回复不是要求的评分 JSON。请重新只输出一个包含 accuracy/logic/naturalness "
+                    "等字段的 JSON 对象，不要输出任何其他文字。"
+                )},
+            ]
+            _, content = await self.llm.chat(retry_messages, temperature=0.2)
+            parsed = parse_json_object(content, log_label="评分重试")
+            if not has_score_fields(parsed):
+                raise LLMOutputValidationError("评分输出经一次重试后仍无法解析")
+        score_out = ScoreOutput.model_validate(parsed)
 
-        accuracy = _clamp(parsed.get("accuracy"))
-        logic = _clamp(parsed.get("logic"))
-        naturalness = _clamp(parsed.get("naturalness"))
+        accuracy = score_out.accuracy
+        logic = score_out.logic
+        naturalness = score_out.naturalness
         # 背诵痕迹：无论 LLM 输出如何，自然度强制压到 0~30 分（文档 2.4，放宽后口径）
         if is_reciting:
             naturalness = min(naturalness, RECITE_NATURALNESS_CAP)
@@ -118,9 +127,6 @@ class GraderAgent(BaseAgent):
             accuracy * WEIGHT_ACCURACY + logic * WEIGHT_LOGIC + naturalness * WEIGHT_NATURALNESS,
             1,
         )
-        missed = parsed.get("missed_points")
-        if not isinstance(missed, list):
-            missed = []
         return {
             "accuracy": accuracy,
             "logic": logic,
@@ -128,10 +134,10 @@ class GraderAgent(BaseAgent):
             "total": total,
             "is_reciting": is_reciting,
             "similarity": round(ratio, 4),
-            "missed_points": [str(p) for p in missed],
-            "comment": str(parsed.get("comment", "")),
+            "missed_points": score_out.missed_points,
+            "comment": score_out.comment,
             # 标注版标准答案：校验标记配对与原文一致后才采用，否则降级 None（前端不标注）
-            "annotated_answer": self._validate_annotated(parsed.get("annotated_answer"), question.answer),
+            "annotated_answer": self._validate_annotated(score_out.annotated_answer, question.answer),
         }
 
     # 标注标记：[[omiss]]…[[/omiss]] 遗漏要点、[[logic]]…[[/logic]] 逻辑问题对应片段

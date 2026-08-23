@@ -34,6 +34,8 @@ class Record(SQLModel, table=True):
     # 补答记录：原记录保留不覆盖，补答写为新记录并标记
     is_retry: bool = Field(default=False, description="是否补答记录")
     retry_of: Optional[int] = Field(default=None, description="补答对应的原记录 id")
+    # 幂等写库：一条记录至多归属一个工作流操作（唯一约束，旧库由 init_db 迁移补列+唯一索引）
+    operation_id: Optional[int] = Field(default=None, unique=True, description="来源工作流操作 id（一操作一记录）")
     created_at: datetime = Field(default_factory=_utcnow, index=True, description="答题时间戳")
 
 

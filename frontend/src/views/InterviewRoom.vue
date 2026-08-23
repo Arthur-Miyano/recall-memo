@@ -12,7 +12,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { interviewSession as iv } from '../mock/interview'
-import { createSession, submitAnswer, skipQuestion } from '../api'
+import { createSession, submitAnswer, skipQuestion, newIdempotencyKey } from '../api'
 import { useSessionStore } from '../stores/session'
 import { interviewSeconds, interviewTimedOut } from '../utils/interviewTimer'
 
@@ -37,6 +37,8 @@ const busy = ref('')
 const lastPayload = ref(null)    // 最近一次 answer/skip 的回执（含 next_question / finished）
 let askedAt = null               // 当前题出题时间（ISO 串）
 const startedAt = ref(null)      // 用户开始作答时间；必须响应式，超时 computed 才会立即刷新
+let answerKey = null             // 当前题「提交回答」的幂等键：失败重试复用，换题时重置
+let skipKey = null               // 当前题「跳过」的幂等键，同上
 let timer = null
 
 // 倒计时文字：m:ss；归零显示「已超时」
@@ -69,6 +71,8 @@ function applyQuestion(q) {
   followTag.value = q.followup ? `追问 ${q.followup}` : '独立题'
   recorded.value = false
   answerText.value = ''
+  answerKey = null                 // 新题新键：上一题的幂等键不复用
+  skipKey = null
   if (answerEl.value) answerEl.value.style.height = ''   // 答题框高度复位
   startedAt.value = null
   resetTimer(q)
@@ -120,7 +124,8 @@ async function submit() {
   if (!text) return
   busy.value = '记录中…'
   try {
-    lastPayload.value = await submitAnswer(sessionId.value, text, startedAt.value)
+    if (!answerKey) answerKey = newIdempotencyKey()   // 一次提交一个键，失败重试复用
+    lastPayload.value = await submitAnswer(sessionId.value, text, startedAt.value, answerKey)
     recorded.value = true
   } catch (e) {
     console.warn('[interview] answer 失败：', e.message)
@@ -135,7 +140,8 @@ async function skip() {
   if (useMock.value) { recorded.value = true; return }
   busy.value = '记录中…'
   try {
-    lastPayload.value = await skipQuestion(sessionId.value)
+    if (!skipKey) skipKey = newIdempotencyKey()
+    lastPayload.value = await skipQuestion(sessionId.value, skipKey)
     recorded.value = true
   } catch (e) {
     console.warn('[interview] skip 失败：', e.message)

@@ -214,7 +214,7 @@ class TestStatsApi:
 
 class TestSessionsLlmDegradation:
     def test_llm_down_returns_503(self, client, monkeypatch):
-        """LLM 全部不可用（超时/限流/未配置 Key）：503 + 可读降级提示，不抛裸 500。"""
+        """LLM 全部不可用：503 + 稳定错误结构（§4.2），不抛裸 500、不含内部细节。"""
         from llm import llm_router
         from llm.router import LLMProviderUnavailableError
 
@@ -225,7 +225,11 @@ class TestSessionsLlmDegradation:
         _import_questions(client, 3)
         resp = client.post("/api/sessions", json={"mode": "interview", "count": 3})
         assert resp.status_code == 503
-        assert "LLM 服务暂不可用" in resp.json()["detail"]
+        body = resp.json()
+        assert body["error"]["code"] == "LLM_PROVIDER_UNAVAILABLE"
+        assert body["error"]["message"]
+        assert body["request_id"]
+        assert resp.headers["x-request-id"] == body["request_id"]
 
     def test_empty_bank_returns_400_with_guidance(self, client):
         """空题库：400 + 引导文案（先有题再训练），会话不留孤儿行。"""

@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 """数据库引擎与初始化。"""
+from datetime import datetime, timezone
+
 from sqlalchemy import text
 from sqlmodel import SQLModel, create_engine
 
@@ -19,8 +21,11 @@ def init_db() -> None:
     migrate_chat_messages_session_id()
     migrate_llm_usage_cache_columns()
     migrate_llm_usage_status_columns()
+    migrate_sessions_version()
+    migrate_records_operation_id()
     backfill_retry_queue()
     expire_stale_sessions()
+    recover_interrupted_operations()
 
 
 def ensure_indexes() -> None:
@@ -124,6 +129,49 @@ def migrate_llm_usage_status_columns() -> None:
             conn.execute(text("ALTER TABLE llm_usage ADD COLUMN status TEXT DEFAULT 'ok'"))
         if "estimated" not in cols:
             conn.execute(text("ALTER TABLE llm_usage ADD COLUMN estimated INTEGER DEFAULT 0"))
+
+
+def migrate_sessions_version() -> None:
+    """轻量迁移：旧库的 sessions 表补 version 列（乐观锁，create_all 不会给已有表加列）。"""
+    with engine.begin() as conn:
+        cols = {row[1] for row in conn.execute(text("PRAGMA table_info(sessions)"))}
+        if "version" not in cols:
+            conn.execute(text("ALTER TABLE sessions ADD COLUMN version INTEGER DEFAULT 0"))
+
+
+def migrate_records_operation_id() -> None:
+    """轻量迁移：旧库的 records 表补 operation_id 列并建唯一索引（幂等：一操作一记录）。
+
+    SQLite 的 ALTER TABLE 不能补唯一约束，唯一性用唯一索引兜底（NULL 不冲突，老记录不受影响）。
+    """
+    with engine.begin() as conn:
+        cols = {row[1] for row in conn.execute(text("PRAGMA table_info(records)"))}
+        if "operation_id" not in cols:
+            conn.execute(text("ALTER TABLE records ADD COLUMN operation_id INTEGER REFERENCES workflow_operations(id)"))
+        conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_records_operation_id ON records (operation_id)"))
+
+
+def recover_interrupted_operations() -> None:
+    """启动恢复：把上次进程中断残留的 PENDING/RUNNING 操作标记为 FAILED（INTERRUPTED）。
+
+    单进程部署：服务启动时不存在真正"进行中"的操作，RUNNING/PENDING 一定是崩溃残留；
+    标记 FAILED 后客户端可用同一幂等键安全重试（见修复方案 §3.3）。
+    """
+    from sqlmodel import Session as DBSession, select
+
+    from models import WorkflowOperation
+
+    with DBSession(engine) as db:
+        stale = db.exec(
+            select(WorkflowOperation).where(WorkflowOperation.status.in_(["PENDING", "RUNNING"]))
+        ).all()
+        for op in stale:
+            op.status = "FAILED"
+            op.error_code = "INTERRUPTED"
+            op.updated_at = datetime.now(timezone.utc)
+            db.add(op)
+        if stale:
+            db.commit()
 
 
 def backfill_retry_queue() -> None:

@@ -26,6 +26,7 @@
 旧库缺某列（如 annotated_answer 等后补列）→ 该列用模型默认值。
 """
 import json
+import logging
 import os
 import shutil
 import sqlite3
@@ -42,14 +43,17 @@ from sqlmodel import Session as DBSession, select
 
 import database
 from agents.importer import SIMILARITY_THRESHOLD, _norm_text, stem_similarity
+from agents.orchestrator import SessionState
+from application.uploads import UploadRejectedError, read_upload, validate_db_upload
+from config import settings
 from models import (
     ChatMessage, ChatSession, DailyStat, LLMUsage, Note,
     Question, QuestionFocus, QuestionGroup, Record, RetryQueueItem, Session,
 )
 
-router = APIRouter(prefix="/settings", tags=["settings"])
+logger = logging.getLogger(__name__)
 
-SQLITE_MAGIC = b"SQLite format 3"
+router = APIRouter(prefix="/settings", tags=["settings"])
 
 
 def _now() -> datetime:
@@ -527,6 +531,201 @@ def _merge_all(src_path: Path) -> dict:
 
 
 # ----------------------------------------------------------------------
+# 源库校验（修复方案 §5.2）：完整性 / schema / 数据约束全部通过后才备份并合并
+# ----------------------------------------------------------------------
+
+# 允许出现的表 → 必需列（缺必需列拒绝；缺后补列沿用"该列用模型默认值"的合并口径）
+_ALLOWED_TABLES: dict[str, set[str]] = {
+    "questions": {"id", "stem"},
+    "sessions": {"id"},
+    "records": {"id", "question_id", "session_id"},
+    "question_focus": {"question_id"},
+    "retry_queue": {"question_id"},
+    "question_groups": {"id", "name"},
+    "daily_stats": {"date"},
+    "chat_sessions": {"id"},
+    "chat_messages": {"session_id", "role", "content"},
+    "notes": {"id", "title"},
+    "llm_usage": {"id"},
+    "workflow_operations": {"id"},
+}
+_SYSTEM_TABLES = {"sqlite_sequence"}
+
+# 长文本/JSON 字段长度上限检查（列存在才查）
+_LONG_TEXT_COLUMNS: dict[str, tuple] = {
+    "questions": ("stem", "answer"),
+    "records": ("user_answer", "annotated_answer"),
+    "sessions": ("context",),
+    "chat_messages": ("content", "thinking"),
+    "notes": ("content",),
+}
+
+# JSON 列 → 期望顶层类型（列存在且值非 NULL 才校验）
+_JSON_COLUMNS: dict[str, tuple] = {
+    "questions": (("keywords", list), ("tags", list), ("variants", list)),
+    "sessions": (("question_ids", list), ("quiz_order", list), ("context", dict)),
+    "question_groups": (("question_ids", list),),
+    "chat_messages": (("thinking", list),),
+}
+
+# 会话 mode 合法值（与 models/session.py 的字段说明一致；P1 集中状态定义后统一引用）
+_VALID_MODES = ("memorize", "interview", "review")
+
+# 外键引用（含自引用 retry_of）：(表, 外键列, 被引用表, 被引用列)
+_FK_CHECKS = (
+    ("records", "question_id", "questions", "id"),
+    ("records", "session_id", "sessions", "id"),
+    ("records", "retry_of", "records", "id"),
+    ("question_focus", "question_id", "questions", "id"),
+    ("retry_queue", "question_id", "questions", "id"),
+    ("chat_messages", "session_id", "chat_sessions", "id"),
+    ("sessions", "current_question_id", "questions", "id"),
+)
+
+# JSON 内嵌的题目 id 引用（question_groups.question_ids / sessions.question_ids/quiz_order）
+_JSON_ID_REFS = (
+    ("question_groups", "question_ids"),
+    ("sessions", "question_ids"),
+    ("sessions", "quiz_order"),
+)
+
+
+def _invalid_db(reason: str) -> UploadRejectedError:
+    """数据库校验失败的统一出口：稳定 INVALID_DATABASE，细节只进日志（§4.2 脱敏口径）。"""
+    logger.warning("数据库合并导入校验未通过：%s", reason)
+    return UploadRejectedError("INVALID_DATABASE", f"数据库文件校验未通过（{reason}）")
+
+
+def _validate_values(src: sqlite3.Connection, tables: set[str], cols: dict[str, set[str]]) -> None:
+    """值域与外键的确定性校验（§5.2 第 7 条）：JSON 合法、mode/state/分数/日期合法、无悬空引用。"""
+    def has_col(table: str, column: str) -> bool:
+        return table in tables and column in cols.get(table, set())
+
+    # JSON 列：可解析且顶层类型匹配
+    for table, columns in _JSON_COLUMNS.items():
+        for col_name, expected in columns:
+            if not has_col(table, col_name):
+                continue
+            rows = src.execute(f'SELECT "{col_name}" FROM "{table}" WHERE "{col_name}" IS NOT NULL')
+            for (raw,) in rows:
+                try:
+                    parsed = json.loads(raw)
+                except (TypeError, json.JSONDecodeError):
+                    raise _invalid_db(f"{table}.{col_name} 含非法 JSON")
+                if not isinstance(parsed, expected):
+                    raise _invalid_db(f"{table}.{col_name} 的 JSON 类型不符")
+
+    # sessions：mode / state 合法值
+    if has_col("sessions", "mode"):
+        placeholders = ",".join("?" for _ in _VALID_MODES)
+        bad = src.execute(
+            f"SELECT COUNT(*) FROM sessions WHERE mode NOT IN ({placeholders})", _VALID_MODES
+        ).fetchone()[0]
+        if bad:
+            raise _invalid_db("存在非法的会话 mode 值")
+    if has_col("sessions", "state"):
+        valid_states = tuple(s.value for s in SessionState)
+        placeholders = ",".join("?" for _ in valid_states)
+        bad = src.execute(
+            f"SELECT COUNT(*) FROM sessions WHERE state NOT IN ({placeholders})", valid_states
+        ).fetchone()[0]
+        if bad:
+            raise _invalid_db("存在非法的会话 state 值")
+
+    # records：分数必须为 NULL 或 0~100
+    for col_name in ("score_accuracy", "score_logic", "score_naturalness", "score_total"):
+        if has_col("records", col_name):
+            bad = src.execute(
+                f'SELECT COUNT(*) FROM records WHERE "{col_name}" IS NOT NULL '
+                f'AND ("{col_name}" < 0 OR "{col_name}" > 100)'
+            ).fetchone()[0]
+            if bad:
+                raise _invalid_db("存在超出 0~100 范围的分数")
+
+    # daily_stats：date 必须可解析为 ISO 日期
+    if has_col("daily_stats", "date"):
+        for (raw,) in src.execute("SELECT date FROM daily_stats"):
+            if _date(raw) is None:
+                raise _invalid_db("daily_stats 含非法日期")
+
+    # 外键引用（含自引用）
+    for table, fk, ref_table, ref_col in _FK_CHECKS:
+        if has_col(table, fk) and has_col(ref_table, ref_col):
+            bad = src.execute(
+                f'SELECT COUNT(*) FROM "{table}" WHERE "{fk}" IS NOT NULL AND '
+                f'"{fk}" NOT IN (SELECT "{ref_col}" FROM "{ref_table}")'
+            ).fetchone()[0]
+            if bad:
+                raise _invalid_db(f"{table}.{fk} 存在悬空引用")
+
+    # JSON 内嵌的题目 id 引用必须指向源库中存在的题
+    if "questions" in tables:
+        qids = {r[0] for r in src.execute("SELECT id FROM questions")}
+        for table, col_name in _JSON_ID_REFS:
+            if not has_col(table, col_name):
+                continue
+            for (raw,) in src.execute(
+                f'SELECT "{col_name}" FROM "{table}" WHERE "{col_name}" IS NOT NULL'
+            ):
+                ids = json.loads(raw)  # JSON 合法性已在上面校验过
+                if any(not isinstance(i, int) or isinstance(i, bool) or i not in qids for i in ids):
+                    raise _invalid_db(f"{table}.{col_name} 存在悬空的题目引用")
+
+
+def _validate_source_db(src_path: Path) -> None:
+    """合并前对源库做完整校验（§5.2 第 1~7 条）：任一不通过抛 INVALID_DATABASE，不备份不合并。
+
+    大小与 SQLite magic 已在上传策略层校验（uploads.validate_db_upload）。
+    """
+    try:
+        src = sqlite3.connect(f"file:{src_path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        raise _invalid_db("文件无法作为 SQLite 数据库打开") from None
+    try:
+        # 2. 完整性快速检查（损坏的页/索引在此暴露）
+        try:
+            row = src.execute("PRAGMA quick_check").fetchone()
+        except sqlite3.Error:
+            raise _invalid_db("数据库文件已损坏") from None
+        if not row or row[0] != "ok":
+            raise _invalid_db("数据库完整性检查未通过")
+        # 3. schema_version：读取留痕（每次 schema 变更自增，0 表示空库）
+        schema_version = src.execute("PRAGMA schema_version").fetchone()[0]
+        logger.info("源库 quick_check 通过，schema_version=%s", schema_version)
+        # 4/5. schema 检查：未知表、trigger、view、虚拟表一律拒绝
+        objects = src.execute("SELECT type, name, sql FROM sqlite_master").fetchall()
+        for obj_type, name, sql in objects:
+            if obj_type == "table":
+                if name not in _ALLOWED_TABLES and name not in _SYSTEM_TABLES:
+                    raise _invalid_db("包含未知表，不是本工具导出的数据库")
+            elif obj_type in ("trigger", "view"):
+                raise _invalid_db("包含触发器或视图，拒绝导入")
+            if sql and "CREATE VIRTUAL TABLE" in str(sql).upper():
+                raise _invalid_db("包含虚拟表，拒绝导入")
+        tables = {name for t, name, _ in objects if t == "table"} - _SYSTEM_TABLES
+        cols = {t: {r[1] for r in src.execute(f'PRAGMA table_info("{t}")')} for t in tables}
+        for table in tables:
+            if _ALLOWED_TABLES[table] - cols[table]:
+                raise _invalid_db("缺少必需列，schema 版本不兼容")
+        # 6. 每张表行数与长文本/JSON 字段长度上限
+        for table in tables:
+            count = src.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+            if count > settings.db_import_max_rows:
+                raise _invalid_db(f"单表数据量超过上限（{settings.db_import_max_rows} 行）")
+            for col_name in _LONG_TEXT_COLUMNS.get(table, ()):
+                if col_name in cols[table]:
+                    longest = src.execute(
+                        f'SELECT MAX(LENGTH("{col_name}")) FROM "{table}"'
+                    ).fetchone()[0]
+                    if longest and longest > settings.db_import_max_field_chars:
+                        raise _invalid_db("存在超过上限的长文本字段")
+        # 7. 值域与外键的确定性校验
+        _validate_values(src, tables, cols)
+    finally:
+        src.close()
+
+
+# ----------------------------------------------------------------------
 # 路由
 # ----------------------------------------------------------------------
 
@@ -543,10 +742,9 @@ def export_db():
 
 @router.post("/import-db")
 async def import_db(file: UploadFile = File(...)):
-    """旧库合并导入：校验文件头 → 备份当前库 → 单事务幂等合并 → 返回各表 导入/跳过 汇总。"""
-    content = await file.read()
-    if len(content) < len(SQLITE_MAGIC) or not content.startswith(SQLITE_MAGIC):
-        raise HTTPException(status_code=400, detail="文件不是 SQLite 数据库（请使用本工具导出的 .db 备份文件）")
+    """旧库合并导入：上传策略（§5.1 大小/签名）→ 源库完整校验（§5.2）→ 备份 → 单事务幂等合并。"""
+    content = await read_upload(file)
+    validate_db_upload(file.filename or "", content)
 
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
     try:
@@ -555,16 +753,21 @@ async def import_db(file: UploadFile = File(...)):
         tmp.close()
 
     try:
+        # 完整校验通过后才创建备份并开始合并（§5.2 第 8 条）
+        _validate_source_db(Path(tmp.name))
         backup = _backup_current()
         try:
             summary = _merge_all(Path(tmp.name))
         except HTTPException:
             raise
         except Exception as exc:
+            # 脱敏（§4.2）：备份绝对路径与原始异常只进服务端日志，响应只给稳定提示
+            logger.exception("数据库合并导入失败（备份文件：%s）", backup)
             raise HTTPException(
                 status_code=500,
-                detail=f"合并失败，已整体回滚，当前数据未受影响（备份：{backup}）：{exc}",
-            )
-        return {"backup": str(backup) if backup else None, "tables": summary}
+                detail="合并失败，已整体回滚，当前数据未受影响；详细原因见服务端日志",
+            ) from exc
+        # 响应只回备份文件名，不回本地绝对路径
+        return {"backup": backup.name if backup else None, "tables": summary}
     finally:
         os.unlink(tmp.name)  # 临时上传文件用完即删

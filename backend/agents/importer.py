@@ -17,8 +17,10 @@ from difflib import SequenceMatcher
 from typing import Any, Optional
 
 from llm import llm_router
+from llm.errors import LLMOutputValidationError
 from llm.router import LLMProviderUnavailableError
 
+from .outputs import EnrichedItem, validate_imported_questions
 from .parsing import extract_json_array
 
 # 题干相似度阈值：>= 该值视为重复，跳过入库
@@ -241,8 +243,13 @@ def _extract_json_array(raw: str) -> list[dict]:
     return extract_json_array(raw)
 
 
-async def llm_extract(chunks: list[str]) -> list[dict[str, Any]]:
-    """LLM 结构化提取：把规则解析不出的片段一次调用整理成题目条目。"""
+async def llm_extract(chunks: list[str], budget: Optional[Any] = None) -> list[dict[str, Any]]:
+    """LLM 结构化提取：把规则解析不出的片段一次调用整理成题目条目。
+
+    输出经 Pydantic 模型校验（§4.3）；无法解析为 JSON 数组时受控重试一次，
+    仍失败抛 LLMOutputValidationError，由调用方降级处理。
+    budget 为可选资源预算（§5.1，duck-typed：before_call(messages) 记账并闸门）。
+    """
     if not chunks:
         return []
     numbered = "\n\n".join(f"【片段 {i + 1}】\n{c[:2000]}" for i, c in enumerate(chunks))
@@ -258,19 +265,23 @@ async def llm_extract(chunks: list[str]) -> list[dict[str, Any]]:
             f"{numbered}\n\n只输出 JSON 数组本身。"
         )},
     ]
-    _, raw = await llm_router.chat(messages, temperature=0.2)
-    items = []
-    for d in _extract_json_array(raw):
-        stem = str(d.get("stem") or "").strip()
-        if not stem:
-            continue
-        item: dict[str, Any] = {"stem": stem}
-        for field in ("answer", "tech_stack", "knowledge_point"):
-            value = str(d.get(field) or "").strip()
-            if value:
-                item[field] = value
-        items.append(item)
-    return items
+    data = None
+    for attempt in (1, 2):
+        if budget is not None:
+            budget.before_call(messages)
+        _, raw = await llm_router.chat(messages, temperature=0.2)
+        try:
+            data = _extract_json_array(raw)
+            break
+        except (ValueError, json.JSONDecodeError) as exc:
+            if attempt == 2:
+                raise LLMOutputValidationError("LLM 提取输出经一次重试后仍无法解析为 JSON 数组") from exc
+            messages.append({"role": "assistant", "content": raw})
+            messages.append({"role": "user", "content": (
+                "上一条回复不是合法 JSON 数组。请重新只输出一个合法 JSON 数组，"
+                "不要输出任何其他文字或 Markdown 代码块。"
+            )})
+    return validate_imported_questions(data)
 
 
 # LLM 补全的单批规模：一次塞太多题会把 prompt 撑爆（大文档导入动辄上千题），分批调用
@@ -280,12 +291,13 @@ _ENRICH_BATCH = 20
 async def llm_enrich(
     items: list[dict[str, Any]],
     progress: Optional[Any] = None,
+    budget: Optional[Any] = None,
 ) -> list[dict[str, list[str]]]:
     """LLM 批量补全：为缺 answer 或缺 tech_stack 的条目生成标准答案与分类。
 
     每 _ENRICH_BATCH 题一次调用，progress 为可选回调 progress(已完成批数, 总批数)。
-    返回与 items 等长的列表，每项是该题被 AI 补全的字段名列表（可能为空）。
-    调用失败抛 LLMProviderUnavailableError，由调用方降级处理。
+    budget 为可选资源预算（§5.1）。返回与 items 等长的列表，每项是该题被 AI 补全的
+    字段名列表（可能为空）。调用失败抛 LLMProviderUnavailableError，由调用方降级处理。
     """
     need = [i for i, it in enumerate(items)
             if not it.get("answer") or not normalize_stack(it.get("tech_stack"))]
@@ -319,33 +331,48 @@ async def llm_enrich(
                 f"{json.dumps(payload, ensure_ascii=False)}\n\n只输出 JSON 数组本身。"
             )},
         ]
-        _, raw = await llm_router.chat(messages, temperature=0.3)
-        for d in _extract_json_array(raw):
+        # 输出无法解析为 JSON 数组时受控重试一次（§4.3），仍失败抛给调用方降级
+        raw_items = None
+        for attempt in (1, 2):
+            if budget is not None:
+                budget.before_call(messages)
+            _, raw = await llm_router.chat(messages, temperature=0.3)
             try:
-                src = batch[int(d.get("index", -1))]
+                raw_items = _extract_json_array(raw)
+                break
+            except (ValueError, json.JSONDecodeError) as exc:
+                if attempt == 2:
+                    raise LLMOutputValidationError("LLM 补全输出经一次重试后仍无法解析为 JSON 数组") from exc
+                messages.append({"role": "assistant", "content": raw})
+                messages.append({"role": "user", "content": (
+                    "上一条回复不是合法 JSON 数组。请重新只输出一个合法 JSON 数组，"
+                    "不要输出任何其他文字或 Markdown 代码块。"
+                )})
+        for d in raw_items:
+            try:
+                item = EnrichedItem.model_validate(d)
+                src = batch[item.index]
             except (ValueError, IndexError):
-                continue
+                continue  # 未通过输出校验或 index 越界：丢弃该条（ValueError 含 pydantic ValidationError）
             it = items[src]
             fields: list[str] = []
-            if not it.get("answer") and str(d.get("answer") or "").strip():
-                it["answer"] = str(d["answer"]).strip()
+            if not it.get("answer") and item.answer.strip():
+                it["answer"] = item.answer.strip()
                 fields.append("answer")
             if not normalize_stack(it.get("tech_stack")):
-                stack = normalize_stack(str(d.get("tech_stack") or ""))
+                stack = normalize_stack(item.tech_stack)
                 if stack:
                     it["tech_stack"] = stack
                     fields.append("tech_stack")
-            if not it.get("knowledge_point") and str(d.get("knowledge_point") or "").strip():
-                it["knowledge_point"] = str(d["knowledge_point"]).strip()
+            if not it.get("knowledge_point") and item.knowledge_point.strip():
+                it["knowledge_point"] = item.knowledge_point.strip()
                 fields.append("knowledge_point")
             # keywords / difficulty 只在 LLM 给了且本地没有时采纳（本地从不预填，故给了就采纳）
-            keywords = d.get("keywords")
-            if isinstance(keywords, list) and keywords:
-                it["keywords"] = [str(k) for k in keywords][:6]
+            if item.keywords:
+                it["keywords"] = item.keywords
                 fields.append("keywords")
-            difficulty = str(d.get("difficulty") or "").strip()
-            if difficulty in ("basic", "medium", "hard"):
-                it["difficulty"] = difficulty
+            if item.difficulty in ("basic", "medium", "hard"):
+                it["difficulty"] = item.difficulty
                 fields.append("difficulty")
             enriched[src]["fields"] = fields
     if progress:
@@ -410,10 +437,13 @@ def _split_for_llm(text: str, max_chars: int = _PDF_CHUNK_CHARS) -> list[str]:
     return chunks
 
 
-async def _extract_chunk_with_llm(chunk: str, index: int) -> tuple[list[dict[str, Any]], Optional[str]]:
+async def _extract_chunk_with_llm(
+    chunk: str, index: int, budget: Optional[Any] = None,
+) -> tuple[list[dict[str, Any]], Optional[str]]:
     """单块 LLM 提取：返回 (items, error)。JSON 解析失败时要求重出一次。
 
     LLM 整体不可用抛 LLMProviderUnavailableError，由调用方统一降级。
+    budget 为可选资源预算（§5.1）。
     """
     messages = [
         {"role": "system", "content": _PDF_EXTRACT_SYSTEM},
@@ -432,23 +462,12 @@ async def _extract_chunk_with_llm(chunk: str, index: int) -> tuple[list[dict[str
         )},
     ]
     for attempt in (1, 2):
+        if budget is not None:
+            budget.before_call(messages)
         _, raw = await llm_router.chat(messages, temperature=0.2)
         try:
-            items = []
-            for d in _extract_json_array(raw):
-                stem = str(d.get("stem") or "").strip()
-                if not stem:
-                    continue
-                item: dict[str, Any] = {"stem": stem}
-                for field in ("answer", "tech_stack", "knowledge_point"):
-                    value = str(d.get(field) or "").strip()
-                    if value:
-                        item[field] = value
-                keywords = d.get("keywords")
-                if isinstance(keywords, list) and keywords:
-                    item["keywords"] = [str(k) for k in keywords][:6]
-                items.append(item)
-            return items, None
+            # 输出逐条经 Pydantic 模型校验（§4.3），非法条目丢弃；数组无法解析才要求重出
+            return validate_imported_questions(_extract_json_array(raw)), None
         except (ValueError, json.JSONDecodeError) as exc:
             if attempt == 2:
                 return [], f"第 {index} 块 LLM 返回无法解析为 JSON：{exc}"
@@ -463,12 +482,14 @@ async def _extract_chunk_with_llm(chunk: str, index: int) -> tuple[list[dict[str
 async def extract_questions_with_llm(
     text: str,
     progress: Optional[Any] = None,
+    budget: Optional[Any] = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """长文本强制 LLM 结构化提取真问题（PDF 导入路径）：
 
     预处理（控制字符/页眉页脚）→ 按段落边界切块（约 2800 字）→ 每块一次 LLM 调用。
     单块失败不拖垮整体：记入返回的 errors。LLM 整体不可用抛 LLMProviderUnavailableError。
-    progress 为可选回调 progress(当前块号, 总块数)，供后台任务汇报进度。
+    budget 为可选资源预算（§5.1）。progress 为可选回调 progress(当前块号, 总块数)，
+    供后台任务汇报进度。
 
     返回 (items, errors)：items 可能仍缺 answer / tech_stack，交给后续补全环节。
     """
@@ -479,7 +500,7 @@ async def extract_questions_with_llm(
     for i, chunk in enumerate(chunks, start=1):
         if progress:
             progress(i, len(chunks))
-        chunk_items, error = await _extract_chunk_with_llm(chunk, i)
+        chunk_items, error = await _extract_chunk_with_llm(chunk, i, budget=budget)
         items += chunk_items
         if error:
             errors.append(error)

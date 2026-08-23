@@ -5,7 +5,7 @@ from .interviewer import InterviewerAgent
 from .strategy import StrategyAgent
 from .grader import GraderAgent
 from .assistant import AssistantAgent
-from .orchestrator import OrchestratorAgent, SessionState, StateError, orchestrator
+from .orchestrator import OperationConflictError, OrchestratorAgent, SessionState, StateError, orchestrator
 
 __all__ = [
     "BaseAgent",
@@ -17,5 +17,6 @@ __all__ = [
     "OrchestratorAgent",
     "SessionState",
     "StateError",
+    "OperationConflictError",
     "orchestrator",
 ]

@@ -15,7 +15,7 @@
 import { ref, onMounted, onUnmounted, onBeforeUnmount, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { memorizeSession as m } from '../mock/memorize'
-import { createSession, startQuiz as apiStartQuiz, getCurrent, submitAnswer } from '../api'
+import { createSession, startQuiz as apiStartQuiz, getCurrent, submitAnswer, newIdempotencyKey } from '../api'
 import { exportRecallCard } from '../utils/recallCard'
 import { useSessionStore } from '../stores/session'
 import NoteSaver from '../components/NoteSaver.vue'
@@ -47,6 +47,7 @@ const feedback = ref(m.quiz.feedback)   // 即时反馈
 const finished = ref(false)
 const summary = ref(null)               // 全部答完后的本轮总结
 const busy = ref('')                    // '出题中…' / '评分中…' 等加载提示
+let quizKey = null                      // 当前题提交的幂等键：失败重试复用同键，进入下一题时重置
 
 // 评分 JSON → 反馈面板结构
 function toFeedback(score, yourAnswer, stdAnswer) {
@@ -83,6 +84,7 @@ function saveSnapshot(fresh) {
     finished: finished.value,
     summary: summary.value,
     useMock: useMock.value,
+    quizKey,                      // 当前题的幂等键：切页再回来重试仍复用同键
   }
 }
 
@@ -100,6 +102,7 @@ function restoreSnapshot(snap) {
   finished.value = snap.finished
   summary.value = snap.summary
   useMock.value = snap.useMock
+  quizKey = snap.quizKey ?? null
 }
 
 onMounted(async () => {
@@ -174,7 +177,8 @@ async function submitQuiz() {
   if (!text) return
   busy.value = '评分 AGENT 批改中…'
   try {
-    const d = await submitAnswer(sessionId.value, text)
+    if (!quizKey) quizKey = newIdempotencyKey()   // 一次提交一个键，失败重试复用
+    const d = await submitAnswer(sessionId.value, text, undefined, quizKey)
     feedback.value = toFeedback(d.score, text, d.standard_answer)
     fbShow.value = true
     if (d.finished) {
@@ -202,6 +206,7 @@ function nextQuestion() {
   fbShow.value = false
   kwShow.value = false
   answerText.value = ''
+  quizKey = null   // 新题新幂等键
 }
 
 /* ---------- 单题放大（展示阶段） ---------- */

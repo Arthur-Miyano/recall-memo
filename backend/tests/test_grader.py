@@ -4,7 +4,8 @@
 - _validate_annotated：标记配对正确通过、未闭合/交叉/改动原文降级 None、
   嵌套规则、无标记按 None、非字符串输入；
 - detect_reciting：重合率与 0.7 阈值（照抄/轻改判背诵，真实复述不判）；
-- score：评分 JSON 解析（正常 / 带 markdown 围栏 / 坏 JSON 容错），
+- score：评分 JSON 解析（正常 / 带 markdown 围栏 / 坏 JSON 受控重试一次后抛
+  LLMOutputValidationError、重试成功恢复正常出分），
   加权总分、背诵时自然度强制 <=30、_clamp 收敛越界分。
 """
 import json
@@ -149,14 +150,33 @@ class TestScore:
         result = await _make_grader(fake_router).score(_question(), "不重合的回答。")
         assert result["total"] == 50.0
 
-    async def test_broken_json_falls_back_to_zero(self, fake_router, fake_llm):
-        """坏 JSON：parse_json_object 返回 {}，各维度收敛为 0。"""
-        fake_llm.score_raw = "这根本不是 JSON"
+    async def test_broken_json_retry_recovers(self, fake_router, fake_llm):
+        """第一次坏、重试后给出合法评分 JSON：受控重试成功，正常出分。"""
+        good = json.dumps({"accuracy": 70, "logic": 70, "naturalness": 70,
+                           "missed_points": [], "comment": "重试成功", "annotated_answer": None})
+        responses = iter(["这不是 JSON", good])
+
+        async def chat(messages, **kwargs):
+            fake_llm.calls.append(messages[0]["content"][:40])
+            return "fake", next(responses)
+
+        fake_router.chat = chat
         result = await _make_grader(fake_router).score(_question(), "不重合的回答。")
-        assert result["total"] == 0.0
-        assert result["accuracy"] == 0.0
-        assert result["comment"] == ""
-        assert result["missed_points"] == []
+        assert result["total"] == 70.0
+        assert result["comment"] == "重试成功"
+        assert len(fake_llm.calls) == 2
+
+    async def test_broken_json_raises_after_one_retry(self, fake_router, fake_llm):
+        """坏 JSON（§4.3）：受控重试一次，仍解析不出得分字段 → 抛 LLMOutputValidationError。"""
+        from llm.errors import LLMOutputValidationError
+
+        fake_llm.score_raw = "这根本不是 JSON"
+        try:
+            await _make_grader(fake_router).score(_question(), "不重合的回答。")
+            raise AssertionError("应抛出 LLMOutputValidationError")
+        except LLMOutputValidationError:
+            pass
+        assert len(fake_llm.calls) == 2, "应只受控重试一次（共 2 次调用）"
 
     async def test_scores_clamped_to_0_100(self, fake_router, fake_llm):
         fake_llm.score = {"accuracy": 150, "logic": -20, "naturalness": "abc", "missed_points": [], "comment": ""}

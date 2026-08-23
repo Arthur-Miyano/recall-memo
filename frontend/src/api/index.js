@@ -17,6 +17,10 @@ function networkError(method, path, cause) {
   return err
 }
 
+// 幂等键生成：一次提交生成一个键，失败重试必须复用同键（后端 workflow_operations 凭此去重/重放结果）
+export const newIdempotencyKey = () =>
+  globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`
+
 export async function request(path, { method = 'GET', body } = {}) {
   let resp
   try {
@@ -30,8 +34,19 @@ export async function request(path, { method = 'GET', body } = {}) {
   }
   if (!resp.ok) {
     let detail = resp.statusText
-    try { detail = (await resp.json()).detail || detail } catch { /* 非 JSON 错误体 */ }
-    throw new Error(`${method} ${path} 失败（${resp.status}）：${detail}`)
+    let code
+    try {
+      const body = await resp.json()
+      // 两种错误形态：{detail: 字符串或 {code, message}}（业务 4xx/409）、
+      // {error: {code, message}, request_id}（LLM 错误边界，见后端 main.py）
+      const d = body.detail
+      if (typeof d === 'string') detail = d
+      else if (d) { detail = d.message || JSON.stringify(d); code = d.code }
+      else if (body.error) { detail = body.error.message || detail; code = body.error.code }
+    } catch { /* 非 JSON 错误体 */ }
+    const err = new Error(`${method} ${path} 失败（${resp.status}）：${detail}`)
+    if (code) err.code = code // 稳定机器错误码（OPERATION_IN_PROGRESS / ANSWER_ALREADY_SUBMITTED / LLM_* 等）
+    throw err
   }
   offline.value = false // 后端恢复后下一次成功请求自动摘掉角标
   return resp.json()
@@ -93,13 +108,16 @@ export const createSession = (mode, stack, count) =>
 export const startQuiz = (sessionId) =>
   request(`/api/sessions/${sessionId}/start_quiz`, { method: 'POST' })
 export const getCurrent = (sessionId) => request(`/api/sessions/${sessionId}/current`)
-export const submitAnswer = (sessionId, answer, startedAt) =>
+export const submitAnswer = (sessionId, answer, startedAt, idempotencyKey) =>
   request(`/api/sessions/${sessionId}/answer`, {
     method: 'POST',
-    body: { answer, started_at: startedAt },
+    body: { answer, started_at: startedAt, idempotency_key: idempotencyKey },
   })
-export const skipQuestion = (sessionId) =>
-  request(`/api/sessions/${sessionId}/skip`, { method: 'POST' })
+export const skipQuestion = (sessionId, idempotencyKey) =>
+  request(`/api/sessions/${sessionId}/skip`, {
+    method: 'POST',
+    body: idempotencyKey ? { idempotency_key: idempotencyKey } : undefined,
+  })
 export const getReview = (sessionId) => request(`/api/sessions/${sessionId}/review`)
 export const getLatestReview = () => request('/api/sessions/latest-review')
 export const getRetryQueue = () => request('/api/sessions/retry-queue')

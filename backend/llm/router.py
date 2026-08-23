@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
-"""LLM 路由：按 LLM_PROVIDER_PRIORITY 顺序尝试可用 Provider，失败自动切换下一个。"""
+"""LLM 路由：按 LLM_PROVIDER_PRIORITY 顺序尝试可用 Provider，仅对可切换错误类型做故障切换。"""
+import asyncio
 import logging
 from typing import Any, Optional, Type
 
 from config import settings
 from .base import BaseLLMClient
 from .deepseek import DeepSeekClient
+from .errors import LLMError, LLMRateLimitError, LLMTemporaryError, LLMTimeoutError
 from .kimi import KimiClient
 from .zhipu import ZhipuClient
 from .doubao import DoubaoClient
@@ -31,13 +33,26 @@ PROVIDER_KEY_ATTR: dict[str, str] = {
 # 各 Provider 的 api key 对应的环境变量名（= settings 字段名大写）
 PROVIDER_ENV_VAR: dict[str, str] = {name: attr.upper() for name, attr in PROVIDER_KEY_ATTR.items()}
 
+# 允许故障切换/重试的错误类型（修复方案 §4.1）：
+# 超时、限流、临时故障（网络/5xx）。认证与请求错误不切换——换 Provider 解决不了配置/参数问题
+_SWITCHABLE_ERRORS = (LLMTimeoutError, LLMRateLimitError, LLMTemporaryError)
 
-class LLMProviderUnavailableError(RuntimeError):
+# 单 Provider 最多重试 1 次（即最多调用 2 次）
+MAX_RETRY_PER_PROVIDER = 1
+
+# 限流退避秒数（重试前等待）
+RATE_LIMIT_BACKOFF = 1.0
+
+# 统一截止时间：一次路由调用的总预算 = 单次超时 × 该系数（容纳单 Provider 重试或一次切换）
+OVERALL_TIMEOUT_FACTOR = 2
+
+
+class LLMProviderUnavailableError(LLMError):
     """所有 Provider 均不可用或全部调用失败。"""
 
 
 class LLMRouter:
-    """按优先级调度 Provider：超时/限流/报错自动切换下一个。"""
+    """按优先级调度 Provider：仅超时/限流/临时故障自动切换，认证与请求错误直接上抛。"""
 
     def __init__(self) -> None:
         self._clients: dict[str, BaseLLMClient] = self._build_clients()
@@ -67,6 +82,38 @@ class LLMRouter:
     def get_client(self, name: str) -> Optional[BaseLLMClient]:
         return self._clients.get(name)
 
+    async def _call_with_retry(
+        self,
+        client: BaseLLMClient,
+        messages: list[dict[str, str]],
+        deadline: float,
+        **kwargs: Any,
+    ) -> str:
+        """单 Provider 调用：可切换错误最多重试 1 次（限流先退避），全程受统一截止时间约束。"""
+        loop = asyncio.get_running_loop()
+        for attempt in range(MAX_RETRY_PER_PROVIDER + 1):
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise LLMTimeoutError(f"Provider {client.name} 调用超出统一截止时间")
+            try:
+                # wait_for 把单次调用也钳制在剩余预算内，防止挂死的连接拖过截止时间
+                return await asyncio.wait_for(client.chat(messages, **kwargs), timeout=remaining)
+            except TimeoutError as exc:  # wait_for 自身超时（asyncio.TimeoutError 即 TimeoutError）
+                exc = LLMTimeoutError(f"Provider {client.name} 调用超出统一截止时间")
+                if attempt >= MAX_RETRY_PER_PROVIDER:
+                    raise exc
+                logger.warning("Provider %s 调用超时，重试第 %s 次", client.name, attempt + 1)
+            except _SWITCHABLE_ERRORS as exc:
+                if attempt >= MAX_RETRY_PER_PROVIDER:
+                    raise
+                if isinstance(exc, LLMRateLimitError):
+                    await asyncio.sleep(RATE_LIMIT_BACKOFF)  # 限流：退避后再重试
+                logger.warning(
+                    "Provider %s 调用失败（%s），重试第 %s 次",
+                    client.name, type(exc).__name__, attempt + 1,
+                )
+        raise LLMTimeoutError(f"Provider {client.name} 调用超出统一截止时间")  # pragma: no cover
+
     async def chat(
         self,
         messages: list[dict[str, str]],
@@ -77,14 +124,16 @@ class LLMRouter:
 
         provider 为 None 时按 LLM_PROVIDER_PRIORITY 顺序尝试；
         指定 provider 时强制使用该 Provider（不可用或失败直接抛错）。
+        只对可切换错误（超时/限流/临时故障）做故障切换；认证与请求错误直接上抛。
         """
+        deadline = asyncio.get_running_loop().time() + settings.llm_timeout * OVERALL_TIMEOUT_FACTOR
         if provider:
             client = self._clients.get(provider)
             if client is None:
                 raise LLMProviderUnavailableError(f"未注册的 Provider：{provider}")
             if not client.available:
                 raise LLMProviderUnavailableError(f"Provider {provider} 未配置 API Key，不可用")
-            content = await client.chat(messages, **kwargs)
+            content = await self._call_with_retry(client, messages, deadline, **kwargs)
             return provider, content
 
         errors: list[str] = []
@@ -95,15 +144,16 @@ class LLMRouter:
                 continue
             tried = True
             try:
-                content = await client.chat(messages, **kwargs)
+                content = await self._call_with_retry(client, messages, deadline, **kwargs)
                 return name, content
-            except Exception as exc:  # 超时/限流/报错均切换到下一个
-                logger.warning("Provider %s 调用失败，切换到下一个：%s", name, exc)
-                errors.append(f"{name}: {exc}")
+            except _SWITCHABLE_ERRORS as exc:
+                # 日志只记错误类型名，不含 Provider 原始异常文本（脱敏）
+                logger.warning("Provider %s 调用失败（%s），切换到下一个", name, type(exc).__name__)
+                errors.append(f"{name}: {type(exc).__name__}")
 
         if not tried:
             raise LLMProviderUnavailableError("没有任何已配置 API Key 的 Provider 可用")
-        raise LLMProviderUnavailableError("所有 Provider 调用均失败：" + "; ".join(errors))
+        raise LLMProviderUnavailableError("所有可用 Provider 均调用失败（" + "、".join(errors) + "）")
 
 
 # 全局单例

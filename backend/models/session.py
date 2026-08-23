@@ -31,6 +31,8 @@ class Session(SQLModel, table=True):
     # 考核时的打乱顺序（元素为 question id）
     quiz_order: list[int] = Field(default_factory=list, sa_column=Column(JSON), description="考核出题顺序（打乱后）")
     current_index: int = Field(default=0, description="当前题在 quiz_order 中的下标")
+    # 乐观锁版本号：会话写操作以 WHERE id=? AND version=? AND state=? 条件更新占位，防并发重复推进
+    version: int = Field(default=0, description="乐观锁版本号（每次写操作 +1）")
     # 会话上下文：变体题干、各题作答与评分结果等临时数据
     context: dict = Field(default_factory=dict, sa_column=Column(JSON), description="会话上下文（变体/作答结果等）")
     created_at: datetime = Field(default_factory=_utcnow, description="创建时间")

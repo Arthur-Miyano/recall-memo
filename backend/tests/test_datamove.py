@@ -231,3 +231,189 @@ class TestImportMerge:
             assert tables[name] == {"imported": 0, "skipped": 0}
         db.expire_all()
         assert db.exec(select(Question).where(Question.tech_stack == "os")).one().keywords == []
+
+
+# ----------------------------------------------------------------------
+# 导入失败脱敏（§4.2）：不泄露备份绝对路径与原始异常
+# ----------------------------------------------------------------------
+
+class TestImportFailureSanitization:
+    def test_merge_failure_does_not_leak_internals(self, client, db, test_engine, tmp_path, monkeypatch):
+        """合并中途抛带敏感信息的异常：500 + 稳定提示，响应不含备份绝对路径/异常原文，当前库无半成品。"""
+        from api import datamove
+
+        _seed_current(db)
+        old_db = _make_old_db(tmp_path / "old.db")
+        secret = f"OperationalError: disk I/O error at {tmp_path / 'test.db.bak-20990101'}"
+
+        def boom(src_path):
+            raise RuntimeError(secret)
+
+        monkeypatch.setattr(datamove, "_merge_all", boom)
+        resp = _upload(client, old_db)
+        assert resp.status_code == 500
+        # 脱敏红线：备份绝对路径与原始异常文本不得返回前端
+        assert str(tmp_path) not in resp.text
+        assert "disk I/O error" not in resp.text
+        assert "bak-" not in resp.text
+        assert resp.json()["detail"] == "合并失败，已整体回滚，当前数据未受影响；详细原因见服务端日志"
+
+        # 当前库数据未受影响（合并前已备份，失败整体回滚）
+        db.expire_all()
+        assert len(db.exec(select(Question)).all()) == 1
+
+
+# ----------------------------------------------------------------------
+# 源库合并前校验（§5.2）：损坏/伪造/未知 schema/触发器/视图/超大表/缺列/非法 JSON/值域/外键
+# ----------------------------------------------------------------------
+
+def _raw_db(path: Path, statements: list[str]) -> Path:
+    """用裸 sqlite3 造一个自定义 schema 的"旧库"。"""
+    conn = sqlite3.connect(path)
+    for stmt in statements:
+        conn.execute(stmt)
+    conn.commit()
+    conn.close()
+    return path
+
+
+# 最小合法 schema：仅含校验所需的必需列
+_MINIMAL_SCHEMA = [
+    "CREATE TABLE questions (id INTEGER PRIMARY KEY, stem TEXT, keywords TEXT)",
+    "CREATE TABLE sessions (id INTEGER PRIMARY KEY, mode TEXT, state TEXT)",
+    "CREATE TABLE records (id INTEGER PRIMARY KEY, question_id INTEGER, session_id INTEGER, score_total REAL)",
+]
+
+
+def _assert_invalid(resp, fragment: str = ""):
+    assert resp.status_code == 400, resp.text
+    body = resp.json()
+    assert body["error"]["code"] == "INVALID_DATABASE"
+    assert body["request_id"]
+    if fragment:
+        assert fragment in body["error"]["message"]
+
+
+class TestSourceDbValidation:
+    def test_corrupted_sqlite_rejected(self, client, tmp_path):
+        """损坏 SQLite：magic 正确但页面内容损坏 → quick_check 暴露。"""
+        bad = tmp_path / "corrupt.db"
+        bad.write_bytes(b"SQLite format 3\x00" + b"\xff" * 4096)
+        _assert_invalid(_upload(client, bad))
+
+    def test_forged_header_rejected(self, client, tmp_path):
+        """伪造文件头：文本文件拼上 SQLite magic → 不是真库。"""
+        forged = tmp_path / "forged.db"
+        forged.write_bytes(b"SQLite format 3\x00" + b"just plain text, not pages" * 100)
+        _assert_invalid(_upload(client, forged))
+
+    def test_unknown_table_rejected(self, client, tmp_path):
+        """未知 schema：包含白名单外的表 → 拒绝（不是本工具导出的库）。"""
+        old = _raw_db(tmp_path / "old.db", _MINIMAL_SCHEMA + ["CREATE TABLE evil (id INTEGER)"])
+        _assert_invalid(_upload(client, old))
+
+    def test_malicious_trigger_rejected(self, client, tmp_path):
+        old = _raw_db(tmp_path / "old.db", _MINIMAL_SCHEMA + [
+            "CREATE TRIGGER evil_trigger AFTER INSERT ON questions BEGIN SELECT 1; END",
+        ])
+        _assert_invalid(_upload(client, old))
+
+    def test_view_rejected(self, client, tmp_path):
+        old = _raw_db(tmp_path / "old.db", _MINIMAL_SCHEMA + [
+            "CREATE VIEW v_questions AS SELECT * FROM questions",
+        ])
+        _assert_invalid(_upload(client, old))
+
+    def test_virtual_table_rejected(self, client, tmp_path):
+        try:
+            old = _raw_db(tmp_path / "old.db", _MINIMAL_SCHEMA + [
+                "CREATE VIRTUAL TABLE fts USING fts5(content)",
+            ])
+        except sqlite3.Error:
+            import pytest
+            pytest.skip("当前 Python sqlite3 未编译 FTS5，无法构造虚拟表用例")
+        _assert_invalid(_upload(client, old))
+
+    def test_oversized_table_rejected(self, client, db, tmp_path, monkeypatch):
+        """超大表：行数超过上限 → 拒绝。"""
+        from config import settings
+
+        monkeypatch.setattr(settings, "db_import_max_rows", 1)
+        old_db = _make_old_db(tmp_path / "old.db")  # 含 2 道题
+        _assert_invalid(_upload(client, old_db))
+
+    def test_missing_required_column_rejected(self, client, tmp_path):
+        """缺必需列（questions 无 stem）→ 拒绝；缺后补列（如 keywords）仍可导入（见既有用例）。"""
+        old = _raw_db(tmp_path / "old.db", ["CREATE TABLE questions (id INTEGER PRIMARY KEY, body TEXT)"])
+        _assert_invalid(_upload(client, old))
+
+    def test_invalid_json_rejected(self, client, tmp_path):
+        """非法 JSON：questions.keywords 不是合法 JSON → 拒绝。"""
+        old = _raw_db(tmp_path / "old.db", _MINIMAL_SCHEMA + [
+            "INSERT INTO questions (id, stem, keywords) VALUES (1, '什么是 GIL？', 'not-json{')",
+        ])
+        _assert_invalid(_upload(client, old))
+
+    def test_json_type_mismatch_rejected(self, client, tmp_path):
+        """JSON 顶层类型不符（keywords 应为数组）→ 拒绝。"""
+        old = _raw_db(tmp_path / "old.db", _MINIMAL_SCHEMA + [
+            'INSERT INTO questions (id, stem, keywords) VALUES (1, \'什么是 GIL？\', \'{"a": 1}\')',
+        ])
+        _assert_invalid(_upload(client, old))
+
+    def test_score_out_of_range_rejected(self, client, tmp_path):
+        old = _raw_db(tmp_path / "old.db", _MINIMAL_SCHEMA + [
+            "INSERT INTO questions (id, stem) VALUES (1, '什么是 GIL？')",
+            "INSERT INTO sessions (id, mode, state) VALUES (1, 'memorize', 'IDLE')",
+            "INSERT INTO records (id, question_id, session_id, score_total) VALUES (1, 1, 1, 150)",
+        ])
+        _assert_invalid(_upload(client, old))
+
+    def test_invalid_mode_rejected(self, client, tmp_path):
+        old = _raw_db(tmp_path / "old.db", _MINIMAL_SCHEMA + [
+            "INSERT INTO sessions (id, mode, state) VALUES (1, 'hack', 'IDLE')",
+        ])
+        _assert_invalid(_upload(client, old))
+
+    def test_invalid_state_rejected(self, client, tmp_path):
+        old = _raw_db(tmp_path / "old.db", _MINIMAL_SCHEMA + [
+            "INSERT INTO sessions (id, mode, state) VALUES (1, 'memorize', 'PWNED')",
+        ])
+        _assert_invalid(_upload(client, old))
+
+    def test_dangling_fk_rejected(self, client, tmp_path):
+        """records 引用不存在的题 → 悬空外键拒绝。"""
+        old = _raw_db(tmp_path / "old.db", _MINIMAL_SCHEMA + [
+            "INSERT INTO sessions (id, mode, state) VALUES (1, 'memorize', 'IDLE')",
+            "INSERT INTO records (id, question_id, session_id) VALUES (1, 999, 1)",
+        ])
+        _assert_invalid(_upload(client, old))
+
+    def test_dangling_json_id_ref_rejected(self, client, tmp_path):
+        """question_groups.question_ids 引用不存在的题 → 拒绝。"""
+        old = _raw_db(tmp_path / "old.db", _MINIMAL_SCHEMA + [
+            "INSERT INTO questions (id, stem) VALUES (1, '什么是 GIL？')",
+            "CREATE TABLE question_groups (id INTEGER PRIMARY KEY, name TEXT, question_ids TEXT)",
+            "INSERT INTO question_groups (id, name, question_ids) VALUES (1, 'g', '[1, 999]')",
+        ])
+        _assert_invalid(_upload(client, old))
+
+    def test_validation_failure_creates_no_backup(self, client, test_engine, tmp_path):
+        """校验失败不得创建备份（§5.2 第 8 条：完整校验通过后才备份），响应不泄露本地路径。"""
+        old = _raw_db(tmp_path / "old.db", _MINIMAL_SCHEMA + ["CREATE TABLE evil (id INTEGER)"])
+        resp = _upload(client, old)
+        _assert_invalid(resp)
+        backups = list(Path(test_engine.url.database).parent.glob("test.db.bak-*"))
+        assert backups == []
+        assert str(tmp_path) not in resp.text
+
+    def test_valid_minimal_db_passes_and_merges(self, client, db, tmp_path):
+        """最小合法库通过校验并正常合并（值域/外键/JSON 全部合法的正面用例）。"""
+        old = _raw_db(tmp_path / "old.db", _MINIMAL_SCHEMA + [
+            "INSERT INTO questions (id, stem, keywords) VALUES (1, '远古题：什么是进程？', '[\"os\"]')",
+            "INSERT INTO sessions (id, mode, state) VALUES (1, 'interview', 'IDLE')",
+            "INSERT INTO records (id, question_id, session_id, score_total) VALUES (1, 1, 1, 88.5)",
+        ])
+        resp = _upload(client, old)
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["tables"]["questions"] == {"imported": 1, "skipped": 0}

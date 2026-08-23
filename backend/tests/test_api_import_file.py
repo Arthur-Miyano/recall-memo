@@ -76,7 +76,10 @@ class TestImportFile:
             files={"file": ("evil.exe", b"\x00\x01", "application/octet-stream")},
         )
         assert resp.status_code == 400
-        assert "不支持的文件类型" in resp.json()["detail"]
+        body = resp.json()
+        assert body["error"]["code"] == "UNSUPPORTED_FILE_TYPE"
+        assert "不支持的文件类型" in body["error"]["message"]
+        assert body["request_id"]
 
     def test_empty_file_rejected(self, client):
         resp = client.post(
@@ -91,7 +94,8 @@ class TestImportFile:
             files={"file": ("broken.pdf", b"%PDF-1.4 garbage", "application/pdf")},
         )
         assert resp.status_code == 400
-        assert "PDF 解析失败" in resp.json()["detail"] or "未提取到文本" in resp.json()["detail"]
+        message = resp.json()["error"]["message"]
+        assert "PDF 解析失败" in message or "未提取到文本" in message
 
 
 class TestImportJobsPdf:

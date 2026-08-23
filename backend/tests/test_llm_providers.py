@@ -58,7 +58,8 @@ class TestRouterRegistration:
         assert clients["doubao"].available is False
 
     async def test_priority_fallback_covers_new_providers(self, monkeypatch):
-        """优先级 zhipu -> doubao：zhipu 调用失败自动切到 doubao。"""
+        """优先级 zhipu -> doubao：zhipu 临时故障（可切换错误）自动切到 doubao。"""
+        from llm.errors import LLMTemporaryError
         from llm.router import LLMRouter
 
         monkeypatch.setattr(settings, "llm_provider_priority", "zhipu,doubao")
@@ -67,8 +68,12 @@ class TestRouterRegistration:
         monkeypatch.setattr(settings, "llm_model", "")
         router = LLMRouter()
 
+        calls = {"zhipu": 0}
+
         async def fail(messages, **kwargs):
-            raise RuntimeError("boom")
+            calls["zhipu"] += 1
+            # §4.1：只有分类后的可切换错误才触发故障切换（裸 RuntimeError 不再切换）
+            raise LLMTemporaryError("Provider zhipu 服务暂时故障（HTTP 503）")
 
         async def ok(messages, **kwargs):
             return "你好"
@@ -77,6 +82,7 @@ class TestRouterRegistration:
         monkeypatch.setattr(router.get_client("doubao"), "chat", ok)
         provider, content = await router.chat([{"role": "user", "content": "hi"}])
         assert (provider, content) == ("doubao", "你好")
+        assert calls["zhipu"] == 2, "单 Provider 最多重试 1 次后才切换"
 
     async def test_unconfigured_new_provider_skipped(self, monkeypatch):
         """新 Provider 未配 Key 时视为不可用，直接跳过。"""

@@ -17,14 +17,14 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from sqlmodel import Session as DBSession, select
 
 from agents.base import SCORE_PASS_THRESHOLD
+from agents.outputs import AssistantAction
 from api.deps import get_db
 import events
 from llm import llm_router
-from llm.router import LLMProviderUnavailableError
 from models import ChatMessage, ChatSession, DailyStat, Question, QuestionFocus, Record, RetryQueueItem
 from timeutil import as_local, local_day_start_utc, local_today
 
@@ -66,13 +66,10 @@ _SYSTEM_PROMPT = (
 # LLM 回复末尾可带 ```action 围栏块，后端只解析校验、随响应返回，不执行；
 # 前端渲染确认卡片，用户确认后由前端直接调题库接口。
 _ACTION_BLOCK_RE = re.compile(r"```action\s*\n(.*?)```", re.DOTALL)
-_ACTION_TYPES = ("delete_questions", "edit_question", "migrate_questions")
-_EDIT_FIELDS = {"stem", "answer", "tech_stack", "difficulty", "keywords", "tags"}
-_ACTION_MAX_IDS = 50
 
 
 def _extract_action(reply: str) -> tuple[str, Optional[dict]]:
-    """从 LLM 回复里检出动作块：剥掉块文本，校验结构。
+    """从 LLM 回复里检出动作块：剥掉块文本，用 AssistantAction 输出模型校验结构（§4.3）。
 
     返回 (清洗后的回复文本, action 或 None)。围栏块只要出现就从文本中剥掉；
     结构校验失败（坏 JSON、未知 type、ids 非法、changes 含非法键等）则丢弃动作，
@@ -86,38 +83,20 @@ def _extract_action(reply: str) -> tuple[str, Optional[dict]]:
         raw = json.loads(m.group(1))
     except json.JSONDecodeError:
         return text, None
-    if not isinstance(raw, dict) or raw.get("type") not in _ACTION_TYPES:
-        return text, None
-
-    ids = raw.get("question_ids")
-    if (
-        not isinstance(ids, list)
-        or not ids
-        or len(ids) > _ACTION_MAX_IDS
-        or any(not isinstance(i, int) or isinstance(i, bool) for i in ids)
-    ):
+    try:
+        parsed = AssistantAction.model_validate(raw)
+    except ValidationError:
         return text, None
 
     action: dict = {
-        "type": raw["type"],
-        "question_ids": ids,
-        "summary": raw.get("summary") if isinstance(raw.get("summary"), str) else "",
+        "type": parsed.type,
+        "question_ids": parsed.question_ids,
+        "summary": parsed.summary,
     }
-    if action["type"] == "edit_question":
-        changes = raw.get("changes")
-        if (
-            len(ids) != 1
-            or not isinstance(changes, dict)
-            or not changes
-            or any(k not in _EDIT_FIELDS for k in changes)
-        ):
-            return text, None
-        action["changes"] = changes
-    if action["type"] == "migrate_questions":
-        to_stack = raw.get("to_stack")
-        if not isinstance(to_stack, str) or not to_stack.strip():
-            return text, None
-        action["to_stack"] = to_stack.strip()
+    if parsed.type == "edit_question":
+        action["changes"] = parsed.changes
+    if parsed.type == "migrate_questions":
+        action["to_stack"] = parsed.to_stack.strip()
     return text, action
 
 
@@ -250,10 +229,8 @@ async def assistant_chat(req: ChatRequest, db: DBSession = Depends(get_db)):
         {"role": "system", "content": _SYSTEM_PROMPT},
         {"role": "user", "content": f"【我的背诵档案】\n{profile}\n\n【我的问题】{message}"},
     ]
-    try:
-        provider, content = await llm_router.chat(messages, temperature=0.5)
-    except LLMProviderUnavailableError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    # LLM 错误由全局异常处理器返回稳定结构（main.py，§4.2）
+    provider, content = await llm_router.chat(messages, temperature=0.5)
     # 检出动作提议：剥掉动作块后再落库/返回；动作本身不在后端执行，由前端确认后调题库接口
     reply, action = _extract_action(content)
     thinking.append(f"智能助理 Agent：{provider} 模型生成答复，{len(content)} 字")

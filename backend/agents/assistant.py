@@ -36,25 +36,35 @@ class AssistantAgent(BaseAgent):
     # 写库：拆成两步，便于与评分 Agent 用 asyncio.gather 并行
     # ------------------------------------------------------------------
 
-    def log_answer(self, db: DBSession, session_id: int, question_id: int, user_answer: str) -> int:
+    def log_answer(
+        self, db: DBSession, session_id: int, question_id: int, user_answer: str,
+        operation_id: Optional[int] = None, commit: bool = True,
+    ) -> int:
         """第一步：写入用户回答原文（不依赖评分结果，可与评分并行）。
 
         该题在待补答队列中时，本次作答即补答（is_retry=True，每次入队只给一次补答机会）。
+        commit=False 时只 flush 取 id，把提交权交给调用方（总控的原子收尾事务）。
         """
         in_queue = db.exec(
             select(RetryQueueItem).where(RetryQueueItem.question_id == question_id)
         ).first() is not None
         record = Record(
             session_id=session_id, question_id=question_id, user_answer=user_answer,
-            is_retry=in_queue,
+            is_retry=in_queue, operation_id=operation_id,
         )
         db.add(record)
-        db.commit()
+        if commit:
+            db.commit()
+        else:
+            db.flush()
         db.refresh(record)
         return record.id
 
-    def fill_scores(self, db: DBSession, record_id: int, score: dict[str, Any]) -> None:
-        """第二步：评分完成后回填分数，并更新 daily_stats 日聚合。"""
+    def fill_scores(self, db: DBSession, record_id: int, score: dict[str, Any], commit: bool = True) -> None:
+        """第二步：评分完成后回填分数，并更新 daily_stats 日聚合。
+
+        commit=False 时全程不提交，与记录写入、会话推进合入调用方的同一个原子事务。
+        """
         record = db.get(Record, record_id)
         if record is None:
             return
@@ -72,14 +82,14 @@ class AssistantAgent(BaseAgent):
         # 补答记录的机会已消耗——无论及格与否都不再入队，若仍在队列则出队；
         # 普通记录维持不及格入队、及格出队。
         if record.is_retry:
-            self._dequeue_retry(db, record.question_id)
+            self._dequeue_retry(db, record.question_id, commit=commit)
         elif record.need_followup:
-            self._enqueue_retry(db, record)
+            self._enqueue_retry(db, record, commit=commit)
         else:
-            self._dequeue_retry(db, record.question_id)
-        self._bump_daily_stat(db, passed=(score.get("total") or 0.0) >= SCORE_PASS_THRESHOLD)
+            self._dequeue_retry(db, record.question_id, commit=commit)
+        self._bump_daily_stat(db, passed=(score.get("total") or 0.0) >= SCORE_PASS_THRESHOLD, commit=commit)
 
-    def _enqueue_retry(self, db: DBSession, record: Record) -> None:
+    def _enqueue_retry(self, db: DBSession, record: Record, commit: bool = True) -> None:
         """不及格的题进入待补答队列：已在队列中则只更新来源。"""
         existing = db.exec(
             select(RetryQueueItem).where(RetryQueueItem.question_id == record.question_id)
@@ -91,19 +101,24 @@ class AssistantAgent(BaseAgent):
         else:
             existing.source = source
             db.add(existing)
-        db.commit()
+        if commit:
+            db.commit()
 
     @staticmethod
-    def _dequeue_retry(db: DBSession, question_id: int) -> None:
+    def _dequeue_retry(db: DBSession, question_id: int, commit: bool = True) -> None:
         """答及格后出队。"""
         existing = db.exec(
             select(RetryQueueItem).where(RetryQueueItem.question_id == question_id)
         ).first()
         if existing is not None:
             db.delete(existing)
-            db.commit()
+            if commit:
+                db.commit()
 
-    def log_skip(self, db: DBSession, session_id: int, question_id: int) -> int:
+    def log_skip(
+        self, db: DBSession, session_id: int, question_id: int,
+        operation_id: Optional[int] = None, commit: bool = True,
+    ) -> int:
         """面试跳过：记为失败（总分 0），不给补答机会——need_followup=False 且不入待补答队列。"""
         record = Record(
             session_id=session_id,
@@ -112,15 +127,19 @@ class AssistantAgent(BaseAgent):
             score_total=0.0,
             skipped=True,
             need_followup=False,
+            operation_id=operation_id,
         )
         db.add(record)
-        db.commit()
+        if commit:
+            db.commit()
+        else:
+            db.flush()
         db.refresh(record)
-        self._bump_daily_stat(db, passed=False)
+        self._bump_daily_stat(db, passed=False, commit=commit)
         return record.id
 
     @staticmethod
-    def _bump_daily_stat(db: DBSession, passed: bool) -> None:
+    def _bump_daily_stat(db: DBSession, passed: bool, commit: bool = True) -> None:
         """更新当日聚合统计并提交。「当日」按本地时区口径（与 stats 接口分组口径一致）。"""
         today = local_today()
         stat = db.exec(select(DailyStat).where(DailyStat.date == today)).first()
@@ -132,7 +151,8 @@ class AssistantAgent(BaseAgent):
         else:
             stat.fail_count += 1
         db.add(stat)
-        db.commit()
+        if commit:
+            db.commit()
 
     # ------------------------------------------------------------------
     # 基础查询

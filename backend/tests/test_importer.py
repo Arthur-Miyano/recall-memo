@@ -301,6 +301,40 @@ class TestLlmPaths:
         assert await importer.llm_extract([]) == []
         assert fake_llm.calls == [], "空片段不应调用 LLM"
 
+    async def test_llm_extract_retry_once_then_recovers(self, fake_llm, monkeypatch):
+        """输出校验（§4.3）：第一次不是合法 JSON 数组 → 受控重试一次，成功后正常返回。"""
+        import json as _json
+
+        from llm import llm_router
+
+        responses = iter(["这不是 JSON", _json.dumps([{"stem": "重试提取的题干"}])])
+        calls = []
+
+        async def chat(messages, **kwargs):
+            calls.append(messages)
+            return "fake", next(responses)
+
+        monkeypatch.setattr(llm_router, "chat", chat)
+        items = await importer.llm_extract(["无法解析的片段"])
+        assert items == [{"stem": "重试提取的题干"}]
+        assert len(calls) == 2, "应只受控重试一次（共 2 次调用）"
+
+    async def test_llm_extract_raises_after_one_retry(self, fake_llm, monkeypatch):
+        """重试一次后仍无法解析 → 抛 LLMOutputValidationError（不再无限重试）。"""
+        from llm import llm_router
+        from llm.errors import LLMOutputValidationError
+
+        calls = []
+
+        async def chat(messages, **kwargs):
+            calls.append(messages)
+            return "fake", "仍然不是 JSON"
+
+        monkeypatch.setattr(llm_router, "chat", chat)
+        with pytest.raises(LLMOutputValidationError):
+            await importer.llm_extract(["无法解析的片段"])
+        assert len(calls) == 2
+
     async def test_llm_enrich_fills_missing_fields(self, fake_llm):
         items = [{"stem": "什么是 GIL？"}, {"stem": "完整题", "answer": "已有答案", "tech_stack": "python"}]
         marks = await importer.llm_enrich(items)
