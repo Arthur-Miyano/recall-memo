@@ -154,17 +154,20 @@ class TestBankDeleteQuestion:
 
         q1, q2 = seed_questions(2)
         q1_id, q2_id = q1.id, q2.id
+        # 历史会话引用 q1（先建会话：外键约束下答题记录必须挂在真实会话上，§6.3）
+        sess = Session(mode="interview", question_ids=[q1_id, q2_id],
+                       quiz_order=[q2_id, q1_id], current_question_id=q1_id)
+        db.add(sess)
+        db.commit()
+        db.refresh(sess)
         # 关联数据：q1 的答题记录 / 重点标记 / 待补答；q2 的答题记录（应保留）
-        db.add(Record(session_id=1, question_id=q1_id, score_total=40.0))
-        db.add(Record(session_id=1, question_id=q2_id, score_total=90.0))
+        db.add(Record(session_id=sess.id, question_id=q1_id, score_total=40.0))
+        db.add(Record(session_id=sess.id, question_id=q2_id, score_total=90.0))
         db.add(QuestionFocus(question_id=q1_id))
         db.add(RetryQueueItem(question_id=q1_id, source="interview"))
         # 追问组：双人组（删 q1 后剩 q2）+ 单人组（删 q1 后空组连组删）
         db.add(QuestionGroup(name="双人组", question_ids=[q1_id, q2_id]))
         db.add(QuestionGroup(name="单人组", question_ids=[q1_id]))
-        # 历史会话引用 q1
-        db.add(Session(mode="interview", question_ids=[q1_id, q2_id],
-                       quiz_order=[q2_id, q1_id], current_question_id=q1_id))
         db.commit()
 
         resp = client.delete(f"/api/bank/questions/{q1_id}")

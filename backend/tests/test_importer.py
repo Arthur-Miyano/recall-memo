@@ -181,7 +181,6 @@ class TestParseText:
 
     def test_unparseable_chunk_goes_to_leftovers(self):
         """没有任何题干内容的纯标签块进 leftovers。"""
-        text = "题目是什么？\n\n答案：只有答案没有题干的那一行之前是空段"
         # 第一段可解析，第二段以标签行开头、无题干 -> leftovers
         items, leftovers = parse_text("正常题目是什么？\n\n答案：孤儿答案行")
         assert [i["stem"] for i in items] == ["正常题目是什么？"]

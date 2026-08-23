@@ -1,0 +1,10 @@
+# 最小 Ruff 配置（修复方案 §7.2）：保持默认规则集（E4/E7/E9/F 等），
+# 不启用行宽/风格类规则，避免为 lint 大规模改动现有代码。
+# extend-exclude 仅为排除本机遗留的损坏 ACL 目录（CI 上不存在，不影响）。
+target-version = "py313"
+extend-exclude = [
+    ".pytest-run-verify",
+    ".pytest-tmp",
+    ".pytest-tmp-*",
+    "八股背诵.tmppytest-run",
+]

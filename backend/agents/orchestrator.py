@@ -2,7 +2,6 @@
 """总控 Agent（Orchestrator）：手写状态机，解析 API 意图，编排其余 Agent 的调用链。"""
 import random
 from datetime import datetime, timezone
-from enum import Enum
 from typing import Any, Optional
 from uuid import uuid4
 
@@ -11,7 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session as DBSession, select
 
 import events
-from database import engine
+from domain.session_state import SessionState  # noqa: F401  re-export：旧导入路径 agents.orchestrator.SessionState 仍可用
 from llm import llm_router
 from llm.errors import (
     LLMAuthenticationError,
@@ -22,31 +21,13 @@ from llm.errors import (
     LLMTimeoutError,
 )
 from llm.router import LLMProviderUnavailableError
-from models import OperationStatus, OperationType, Question, Record, RetryQueueItem, Session, WorkflowOperation
+from models import OperationStatus, OperationType, Question, RetryQueueItem, Session, WorkflowOperation
 
 from .assistant import AssistantAgent
 from .base import BaseAgent
 from .grader import GraderAgent
 from .interviewer import InterviewerAgent
 from .strategy import StrategyAgent
-
-
-class SessionState(str, Enum):
-    """会话状态机，见文档 3.3。"""
-
-    IDLE = "IDLE"
-    # 记忆训练模式
-    MEMORIZE_SHOW = "MEMORIZE_SHOW"  # 展示题干+答案供记忆
-    MEMORIZE_QUIZ = "MEMORIZE_QUIZ"  # 打乱顺序考核中
-    # 面试模拟模式
-    INTERVIEW_SELECT = "INTERVIEW_SELECT"  # 选技术栈/题量（抽题中）
-    INTERVIEW_ASK = "INTERVIEW_ASK"  # 展示变体题干
-    INTERVIEW_ANSWER = "INTERVIEW_ANSWER"  # 等待回答（2 分钟计时由前端做）
-    INTERVIEW_SCORE = "INTERVIEW_SCORE"  # 评分中（评分+助理并行，不透露给用户）
-    INTERVIEW_REVIEW = "INTERVIEW_REVIEW"  # 终局复盘
-    # 回忆模式
-    REVIEW_SHOW = "REVIEW_SHOW"  # 展示题干+答案供回忆
-    REVIEW_QUIZ = "REVIEW_QUIZ"  # 打乱顺序考核中
 
 
 class StateError(RuntimeError):

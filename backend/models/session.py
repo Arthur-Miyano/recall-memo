@@ -3,26 +3,36 @@
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import Column, JSON
+from sqlalchemy import CheckConstraint, Column, JSON
 from sqlmodel import Field, SQLModel
+
+from domain.session_state import VALID_SESSION_MODES, VALID_SESSION_STATES
 
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _in_check(column: str, values: tuple[str, ...], name: str) -> CheckConstraint:
+    """合法值约束（§6.3）：值集合引用 domain.session_state 的集中定义。"""
+    literals = ", ".join(f"'{v}'" for v in values)
+    return CheckConstraint(f"{column} IN ({literals})", name=name)
+
+
 class Session(SQLModel, table=True):
     """会话表：模式、状态机当前状态、当前题目，随进度持续更新。"""
 
     __tablename__ = "sessions"
+    __table_args__ = (
+        _in_check("mode", VALID_SESSION_MODES, "ck_sessions_mode"),
+        _in_check("state", VALID_SESSION_STATES, "ck_sessions_state"),
+    )
 
     id: Optional[int] = Field(default=None, primary_key=True)
     mode: str = Field(index=True, description="模式：memorize（背诵）/ interview（面试）/ review（回忆）")
-    # 状态机状态，见文档 3.3：IDLE / MEMORIZE_SHOW / MEMORIZE_QUIZ /
-    # INTERVIEW_SELECT / INTERVIEW_ASK / INTERVIEW_ANSWER / INTERVIEW_SCORE / INTERVIEW_REVIEW /
-    # REVIEW_SHOW / REVIEW_QUIZ（回忆模式，预留）
+    # 状态机状态，合法值见 domain/session_state.py（含 EXPIRED 终态标记）
     state: str = Field(default="IDLE", description="状态机当前状态")
-    current_question_id: Optional[int] = Field(default=None, description="当前题目 id")
+    current_question_id: Optional[int] = Field(default=None, foreign_key="questions.id", description="当前题目 id")
     tech_stack: str = Field(default="", description="本次会话选择的技术栈")
     # 当前活跃 Agent 名称（供前端展示与后续 SSE 推送）
     active_agent: str = Field(default="", description="当前活跃 Agent 名称")

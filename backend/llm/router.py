@@ -98,7 +98,7 @@ class LLMRouter:
             try:
                 # wait_for 把单次调用也钳制在剩余预算内，防止挂死的连接拖过截止时间
                 return await asyncio.wait_for(client.chat(messages, **kwargs), timeout=remaining)
-            except TimeoutError as exc:  # wait_for 自身超时（asyncio.TimeoutError 即 TimeoutError）
+            except TimeoutError:  # wait_for 自身超时（asyncio.TimeoutError 即 TimeoutError）
                 exc = LLMTimeoutError(f"Provider {client.name} 调用超出统一截止时间")
                 if attempt >= MAX_RETRY_PER_PROVIDER:
                     raise exc

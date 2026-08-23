@@ -15,13 +15,13 @@
 // 录入题库：ImportPanel → POST /api/bank/import，入库成功后重拉卡片数据
 // 图表说明：折线与知识图谱为手绘 SVG（图纸感直角转折、像素方块节点），
 //   有意不用 ECharts —— 像素美学是设计的一部分
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import SettingsPanel from '../components/SettingsPanel.vue'
 import DashboardModal from '../components/DashboardModal.vue'
 import ImportPanel from '../components/ImportPanel.vue'
 import InkCalendar from '../components/InkCalendar.vue'
 import { dashboard as mockDb } from '../mock/dashboard'
-import { getStatsOverview, getStatsDaily, getBankOverview, getLlmUsage } from '../api'
+import { getStatsOverview, getStatsDaily, getBankOverview, getLlmUsage, offline } from '../api'
 import {
   getStatsDailyDetail, getStatsPerQuestion, getRetryQueue, postAssistantPlan,
 } from '../api/bank'
@@ -115,6 +115,8 @@ async function loadDashboard() {
   }
 }
 onMounted(loadDashboard)
+// 后端恢复（offline 摘标）后重载真实数据：mock 骨架只兜底展示，不当用户数据继续用（§8.2）
+watch(offline, (v, prev) => { if (prev && !v) loadDashboard() })
 
 // 知识图谱小卡片（概览态）：不画节点图，每栈只统计 掌握/薄弱/未背 计数 + 完成比例
 function buildStackOverview(bank) {

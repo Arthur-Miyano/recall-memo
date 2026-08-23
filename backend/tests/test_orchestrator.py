@@ -75,7 +75,7 @@ class TestCreateValidation:
 
 class TestMemorizeFlow:
     async def test_full_flow(self, orch, db, seed_questions, fake_llm):
-        questions = seed_questions(3)
+        seed_questions(3)
         _set_score(fake_llm, 88)
 
         created = await orch.run("create_session", db=db, mode="memorize", count=3)
@@ -137,7 +137,6 @@ class TestMemorizeFlow:
         await orch.run("create_session", db=db, mode="memorize", count=3)
         sid = db.exec(select(Session)).first().id
         await orch.run("start_quiz", db=db, session_id=sid)
-        q = db.get(Question, questions[0].id)
         # 至少有一道题为 start_quiz 的当前题生成了变体并缓存入库
         variants_count = sum(len(db.get(Question, x.id).variants) for x in questions)
         assert variants_count >= 1

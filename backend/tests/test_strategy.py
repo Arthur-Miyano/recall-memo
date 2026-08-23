@@ -13,9 +13,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from agents.base import SCORE_PASS_THRESHOLD
 from agents.strategy import StrategyAgent
-from models import Question, QuestionGroup, Record, RetryQueueItem
+from models import QuestionGroup, Record, RetryQueueItem, Session
 
 
 @pytest.fixture()
@@ -23,9 +22,17 @@ def strategy(fake_router):
     return StrategyAgent(fake_router)
 
 
+def _ensure_session(db, session_id: int) -> None:
+    """外键约束（§6.3）下记录必须挂在真实会话上：缺则补建一个。"""
+    if db.get(Session, session_id) is None:
+        db.add(Session(id=session_id, mode="memorize", state="IDLE"))
+        db.commit()
+
+
 def _add_record(db, question_id: int, score: float | None, session_id: int = 1,
                 skipped: bool = False, is_retry: bool = False,
                 created_at: datetime | None = None) -> Record:
+    _ensure_session(db, session_id)
     r = Record(
         session_id=session_id, question_id=question_id,
         user_answer="", score_total=score, skipped=skipped, is_retry=is_retry,

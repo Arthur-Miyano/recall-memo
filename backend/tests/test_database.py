@@ -96,6 +96,11 @@ class TestBackfillRetryQueue:
         from models import Question
 
         with DBSession(test_engine) as db:
+            sess = Session(mode="memorize", state="IDLE")
+            db.add(sess)
+            db.commit()
+            db.refresh(sess)
+            sid = sess.id
             q1 = Question(stem="题一？", answer="答案一", tech_stack="python")
             q2 = Question(stem="题二？", answer="答案二", tech_stack="python")
             q3 = Question(stem="题三？", answer="答案三", tech_stack="python")
@@ -108,13 +113,13 @@ class TestBackfillRetryQueue:
             db.refresh(q3)
 
             # q1：最新记录不及格 -> 应在队列
-            db.add(Record(session_id=1, question_id=q1.id, score_total=90.0))
-            db.add(Record(session_id=1, question_id=q1.id, score_total=20.0))
+            db.add(Record(session_id=sid, question_id=q1.id, score_total=90.0))
+            db.add(Record(session_id=sid, question_id=q1.id, score_total=20.0))
             # q2：最新记录及格 -> 不在队列
-            db.add(Record(session_id=1, question_id=q2.id, score_total=30.0))
-            db.add(Record(session_id=1, question_id=q2.id, score_total=85.0))
+            db.add(Record(session_id=sid, question_id=q2.id, score_total=30.0))
+            db.add(Record(session_id=sid, question_id=q2.id, score_total=85.0))
             # q3：最新记录被跳过 -> 跳过判负不给补答，不应在队列
-            db.add(Record(session_id=1, question_id=q3.id, score_total=0.0, skipped=True))
+            db.add(Record(session_id=sid, question_id=q3.id, score_total=0.0, skipped=True))
             # 队列里已有一条 q2 的旧记录（历史遗留），backfill 应把它删掉
             db.add(RetryQueueItem(question_id=q2.id, source="old"))
             db.commit()
@@ -133,11 +138,15 @@ class TestBackfillRetryQueue:
         from models import Question
 
         with DBSession(test_engine) as db:
+            sess = Session(mode="memorize", state="IDLE")
+            db.add(sess)
+            db.commit()
+            db.refresh(sess)
             q = Question(stem="被跳过的题？", answer="答案", tech_stack="python")
             db.add(q)
             db.commit()
             db.refresh(q)
-            db.add(Record(session_id=1, question_id=q.id, score_total=0.0, skipped=True))
+            db.add(Record(session_id=sess.id, question_id=q.id, score_total=0.0, skipped=True))
             db.commit()
 
             database.backfill_retry_queue()  # 模拟重启

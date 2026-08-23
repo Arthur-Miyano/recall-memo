@@ -19,7 +19,7 @@ class QuestionFocus(SQLModel, table=True):
     __tablename__ = "question_focus"
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    question_id: int = Field(unique=True, index=True, description="题目 id")
+    question_id: int = Field(unique=True, index=True, foreign_key="questions.id", description="题目 id")
     created_at: datetime = Field(default_factory=_utcnow, description="标记时间")
 
 
@@ -29,6 +29,6 @@ class RetryQueueItem(SQLModel, table=True):
     __tablename__ = "retry_queue"
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    question_id: int = Field(unique=True, index=True, description="题目 id")
+    question_id: int = Field(unique=True, index=True, foreign_key="questions.id", description="题目 id")
     source: str = Field(default="", description="入队来源：interview / memorize / review")
     created_at: datetime = Field(default_factory=_utcnow, description="入队时间")

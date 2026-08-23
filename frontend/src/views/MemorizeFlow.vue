@@ -15,7 +15,11 @@
 import { ref, onMounted, onUnmounted, onBeforeUnmount, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { memorizeSession as m } from '../mock/memorize'
-import { createSession, startQuiz as apiStartQuiz, getCurrent, submitAnswer, newIdempotencyKey } from '../api'
+import {
+  createSession, getSessionInfo, startQuiz as apiStartQuiz, getCurrent, submitAnswer,
+  newIdempotencyKey, offline, createRequestScope,
+} from '../api'
+import { decideRestore, draftStillValid } from '../utils/sessionRecovery'
 import { exportRecallCard } from '../utils/recallCard'
 import { useSessionStore } from '../stores/session'
 import NoteSaver from '../components/NoteSaver.vue'
@@ -48,6 +52,8 @@ const finished = ref(false)
 const summary = ref(null)               // 全部答完后的本轮总结
 const busy = ref('')                    // '出题中…' / '评分中…' 等加载提示
 let quizKey = null                      // 当前题提交的幂等键：失败重试复用同键，进入下一题时重置
+let quizQid = null                      // 当前考核题的 question_id：恢复时对账草稿是否仍有效
+const scope = createRequestScope()      // 页面级请求域：卸载时取消挂起请求（§8.3）
 
 // 评分 JSON → 反馈面板结构
 function toFeedback(score, yourAnswer, stdAnswer) {
@@ -69,7 +75,7 @@ function toFeedback(score, yourAnswer, stdAnswer) {
 // ---- 会话快照：开始训练后题目固定，切页再回来原样恢复 ----
 // 只有首页「开始记忆」带新 fresh token 跳转时才重开一轮；其余入口（含浏览器后退）都恢复快照
 function saveSnapshot(fresh) {
-  sessionStore.memorize = {
+  sessionStore.saveMemorize({
     fresh: fresh ?? sessionStore.memorize?.fresh ?? null,
     sessionId: sessionId.value,
     topLeft: topLeft.value,
@@ -78,14 +84,15 @@ function saveSnapshot(fresh) {
     kwMap: { ...kwMap },
     quizzing: quizzing.value,
     quiz: quiz.value,
-    answerText: answerText.value,
+    quizQid,                        // 当前考核题 id：恢复时与服务端 current 对账
+    answerText: answerText.value,   // 未提交草稿（本地恢复的唯一内容，其余以服务端为准）
     feedback: feedback.value,
     fbShow: fbShow.value,
     finished: finished.value,
     summary: summary.value,
     useMock: useMock.value,
     quizKey,                      // 当前题的幂等键：切页再回来重试仍复用同键
-  }
+  })
 }
 
 function restoreSnapshot(snap) {
@@ -96,6 +103,7 @@ function restoreSnapshot(snap) {
   Object.assign(kwMap, snap.kwMap)
   quizzing.value = snap.quizzing
   quiz.value = snap.quiz
+  quizQid = snap.quizQid ?? null
   answerText.value = snap.answerText
   feedback.value = snap.feedback
   fbShow.value = snap.fbShow
@@ -105,27 +113,110 @@ function restoreSnapshot(snap) {
   quizKey = snap.quizKey ?? null
 }
 
-onMounted(async () => {
+// 应用服务端返回的题目列表到展示阶段（创建会话专用）
+function applyQuestions(d, mode, stack) {
+  sessionId.value = d.session_id
+  topLeft.value = `${mode === 'review' ? 'RECALL' : 'MEMORIZE'} — ${(d.questions[0]?.tech_stack || stack || 'mixed').toUpperCase()} · 本轮 ${d.questions.length} 题`
+  topRight.value = `${d.state} — ${mode === 'review' ? '回忆中' : '记忆中'}`
+  questions.value = d.questions.map((q, i) => {
+    kwMap[q.question_id] = q.keywords || []
+    return { no: `题 ${i + 1} / ${d.questions.length}`, title: q.stem, retry: q.retry, answer: q.answer }
+  })
+}
+
+// 用幂等键重放取回已保存的评分结果（后端重放语义：同键重发返回已存结果，不是重复提交）
+async function replayAnswer(snap) {
+  const d = await submitAnswer(sessionId.value, snap.answerText, undefined, snap.quizKey)
+  feedback.value = toFeedback(d.score, snap.answerText, d.standard_answer)
+  fbShow.value = true
+  if (d.finished) {
+    finished.value = true
+    summary.value = d.summary
+  } else {
+    const nx = d.next_question
+    quiz.value = {
+      question: nx.variant_stem,
+      followTag: `考核 ${nx.progress} · 已打乱`,
+      keywords: kwMap[nx.question_id] || [],
+    }
+    quizQid = nx.question_id
+  }
+}
+
+// 考核中恢复：以服务端 current 为准刷新当前题；草稿仅在同题时保留
+async function resyncCurrent(snap) {
+  if (!snap.quizzing || snap.finished || snap.useMock) return
+  if (snap.fbShow) return   // 已出反馈：纯展示态，原样恢复
+  try {
+    const cur = await getCurrent(sessionId.value, { retry: 1, signal: scope.signal })
+    quiz.value = {
+      question: cur.variant_stem,
+      followTag: `考核 ${cur.progress} · 已打乱`,
+      keywords: cur.keywords || [],
+    }
+    if (draftStillValid(cur.question_id, snap.quizQid)) return   // 同一题：保留本地未提交草稿
+    // 服务端已推进而本地未收到反馈：重放幂等键取回结果
+    if (snap.quizKey && snap.answerText) { await replayAnswer(snap); return }
+    // 无法对账：以服务端为准，丢弃本地草稿
+    answerText.value = ''
+    quizKey = null
+    quizQid = cur.question_id
+  } catch (e) {
+    if (scope.signal.aborted) return
+    console.warn('[memorize] 恢复考核进度失败：', e.message)
+  }
+}
+
+// 进入页面：先核对服务端会话状态（唯一事实来源），再决定恢复 / 离线兜底 / 重建（§8.1）
+async function initSession() {
   const mode = route.query.mode === 'review' ? 'review' : 'memorize'
   const count = Number(route.query.count) || 3
   const stack = typeof route.query.stack === 'string' ? route.query.stack : null
   const fresh = typeof route.query.fresh === 'string' ? route.query.fresh : null
-  // 有快照且本次不是「新的开始」（无 fresh 或 fresh 与快照一致）→ 恢复，不重抽题
+  // 有快照且本次不是「新的开始」（无 fresh 或 fresh 与快照一致）→ 走恢复决策
   const snap = sessionStore.memorize
   if (snap && (!fresh || snap.fresh === fresh)) {
-    restoreSnapshot(snap)
-    return
+    // demo 快照只在仍离线时恢复展示；后端已恢复则落到下面重建真实会话（§8.2）
+    if (snap.useMock) {
+      if (offline.value) { restoreSnapshot(snap); return }
+    } else if (snap.sessionId) {
+      let decision
+      try {
+        const info = await getSessionInfo(snap.sessionId, { retry: 1, signal: scope.signal })
+        decision = decideRestore({ snapshot: snap, serverInfo: info, expectedMode: mode })
+      } catch (e) {
+        if (scope.signal.aborted) return
+        decision = decideRestore({ snapshot: snap, serverError: e, expectedMode: mode })
+      }
+      if (decision.action === 'restore') {
+        restoreSnapshot(snap)
+        await resyncCurrent(snap)
+        saveSnapshot()
+        return
+      }
+      if (decision.action === 'offline') { restoreSnapshot(snap); return }
+      if (decision.action === 'finished' && snap.quizKey && snap.answerText) {
+        // 服务端已完成而本地未收到响应：幂等重放取回结果
+        try {
+          restoreSnapshot(snap)
+          await replayAnswer(snap)
+          saveSnapshot()
+          return
+        } catch (e) {
+          console.warn('[memorize] 重放最后一次提交失败，重建会话：', e.message)
+        }
+      }
+      // restart / 重放失败：快照失效（过期/404/模式冲突），丢弃后落到下面重建
+    }
   }
+  // 创建新会话
+  useMock.value = false
+  loadError.value = ''
   try {
-    const d = await createSession(mode, stack, count)
-    sessionId.value = d.session_id
-    topLeft.value = `${mode === 'review' ? 'RECALL' : 'MEMORIZE'} — ${(d.questions[0]?.tech_stack || stack || 'mixed').toUpperCase()} · 本轮 ${d.questions.length} 题`
-    topRight.value = `${d.state} — ${mode === 'review' ? '回忆中' : '记忆中'}`
-    questions.value = d.questions.map((q, i) => {
-      kwMap[q.question_id] = q.keywords || []
-      return { no: `题 ${i + 1} / ${d.questions.length}`, title: q.stem, retry: q.retry, answer: q.answer }
-    })
+    const d = await createSession(mode, stack, count, { signal: scope.signal })
+    applyQuestions(d, mode, stack)
   } catch (e) {
+    if (scope.signal.aborted) return
     if (e.isNetwork) {
       // 后端不可达：回退 mock 演示数据（离线角标由 api 层置位）
       console.warn('[memorize] 创建会话失败（网络），回退 mock 演示数据：', e.message)
@@ -139,7 +230,12 @@ onMounted(async () => {
     }
   }
   saveSnapshot(fresh)
-})
+}
+
+onMounted(initSession)
+
+// 后端恢复（offline 摘标）后重建真实会话：demo 数据只兜底展示，不当用户数据继续用（§8.2）
+watch(offline, (v, prev) => { if (prev && !v && useMock.value) initSession() })
 
 // 离开页面时保存快照，回来恢复
 onBeforeUnmount(() => saveSnapshot())
@@ -156,6 +252,7 @@ async function startQuiz() {
       followTag: `考核 ${cur.progress} · 已打乱`,
       keywords: cur.keywords || [],
     }
+    quizQid = cur.question_id
     answerText.value = ''
     fbShow.value = false
     quizzing.value = true
@@ -192,7 +289,9 @@ async function submitQuiz() {
         followTag: `考核 ${nx.progress} · 已打乱`,
         keywords: kwMap[nx.question_id] || [],
       }
+      quizQid = nx.question_id
     }
+    saveSnapshot()   // 即时落快照：崩溃/切页后按服务端状态恢复
   } catch (e) {
     console.warn('[memorize] answer 失败：', e.message)
     alert('提交失败：' + e.message)
@@ -226,6 +325,7 @@ function onZoomKey(e) {
 }
 onMounted(() => window.addEventListener('keydown', onZoomKey))
 onUnmounted(() => {
+  scope.cancel()   // 页面卸载：取消挂起请求（AbortError，不置离线标记）
   window.removeEventListener('keydown', onZoomKey)
   document.body.style.overflow = ''   // 弹窗开着时跳路由也要解锁背景滚动
 })

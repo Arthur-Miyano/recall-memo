@@ -4,11 +4,11 @@
 // 数据流：导航项来自 router 配置的 meta.nav；螃蟹面板状态在 InkCrab 内部自管理
 // 注意：记忆训练/面试答题不进顶部导航（meta.navHide）——只能从首页抽屉进入，
 //       防止误触直达开始答题；路由本身保留
-import { onMounted } from 'vue'
+import { onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import InkCrab from './components/InkCrab.vue'
 import AgentTicker from './components/AgentTicker.vue'
-import { offline } from './api'
+import { offline, getHealth } from './api'
 import { startAgentEvents } from './utils/events'
 
 const route = useRoute()
@@ -16,6 +16,21 @@ const router = useRouter()
 
 // 订阅 /api/events（SSE）：实时显示当前活跃 Agent；断线由 EventSource 自动重连
 onMounted(startAgentEvents)
+
+// 离线恢复探测（§8.2）：离线期间每 15s 探一次 /api/health，
+// 成功后 request 层自动摘掉离线标记，各页面 watcher 据此重载真实数据（不把 mock 快照继续当用户数据）
+let healthPoller = null
+watch(offline, (v) => {
+  if (v && !healthPoller) {
+    healthPoller = setInterval(() => {
+      getHealth({ timeout: 5000 }).catch(() => { /* 仍离线，下一轮再探 */ })
+    }, 15000)
+  } else if (!v && healthPoller) {
+    clearInterval(healthPoller)
+    healthPoller = null
+  }
+}, { immediate: true })
+onUnmounted(() => { if (healthPoller) clearInterval(healthPoller) })
 </script>
 
 <template>

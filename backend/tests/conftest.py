@@ -9,10 +9,9 @@
 """
 import json
 import re
-from pathlib import Path
 
 import pytest
-from sqlmodel import SQLModel, create_engine
+from sqlmodel import SQLModel
 from sqlmodel import Session as DBSession
 
 import models  # noqa: F401  注册全部表定义到 metadata
@@ -25,15 +24,16 @@ import database
 
 @pytest.fixture()
 def test_engine(tmp_path, monkeypatch):
-    """临时 SQLite 引擎：建表后替换 database.engine（init_db / 维护函数均走该引擎）。"""
-    engine = create_engine(
-        f"sqlite:///{tmp_path / 'test.db'}",
-        echo=False,
-        connect_args={"check_same_thread": False},
-    )
+    """临时 SQLite 引擎：建表后替换 database.engine（init_db / 维护函数均走该引擎）。
+
+    用 database.create_app_engine 创建：与生产同一套 PRAGMA（外键强制/WAL/busy_timeout），
+    让外键与 CheckConstraint 约束在测试中真实生效。teardown 时 dispose 释放连接池。
+    """
+    engine = database.create_app_engine(f"sqlite:///{tmp_path / 'test.db'}")
     SQLModel.metadata.create_all(engine)
     monkeypatch.setattr(database, "engine", engine)
-    return engine
+    yield engine
+    engine.dispose()
 
 
 @pytest.fixture()

@@ -43,9 +43,9 @@ from sqlmodel import Session as DBSession, select
 
 import database
 from agents.importer import SIMILARITY_THRESHOLD, _norm_text, stem_similarity
-from agents.orchestrator import SessionState
 from application.uploads import UploadRejectedError, read_upload, validate_db_upload
 from config import settings
+from domain.session_state import VALID_SESSION_MODES, VALID_SESSION_STATES
 from models import (
     ChatMessage, ChatSession, DailyStat, LLMUsage, Note,
     Question, QuestionFocus, QuestionGroup, Record, RetryQueueItem, Session,
@@ -568,9 +568,6 @@ _JSON_COLUMNS: dict[str, tuple] = {
     "chat_messages": (("thinking", list),),
 }
 
-# 会话 mode 合法值（与 models/session.py 的字段说明一致；P1 集中状态定义后统一引用）
-_VALID_MODES = ("memorize", "interview", "review")
-
 # 外键引用（含自引用 retry_of）：(表, 外键列, 被引用表, 被引用列)
 _FK_CHECKS = (
     ("records", "question_id", "questions", "id"),
@@ -615,19 +612,18 @@ def _validate_values(src: sqlite3.Connection, tables: set[str], cols: dict[str, 
                 if not isinstance(parsed, expected):
                     raise _invalid_db(f"{table}.{col_name} 的 JSON 类型不符")
 
-    # sessions：mode / state 合法值
+    # sessions：mode / state 合法值（引用 domain.session_state 集中定义，§6.1）
     if has_col("sessions", "mode"):
-        placeholders = ",".join("?" for _ in _VALID_MODES)
+        placeholders = ",".join("?" for _ in VALID_SESSION_MODES)
         bad = src.execute(
-            f"SELECT COUNT(*) FROM sessions WHERE mode NOT IN ({placeholders})", _VALID_MODES
+            f"SELECT COUNT(*) FROM sessions WHERE mode NOT IN ({placeholders})", VALID_SESSION_MODES
         ).fetchone()[0]
         if bad:
             raise _invalid_db("存在非法的会话 mode 值")
     if has_col("sessions", "state"):
-        valid_states = tuple(s.value for s in SessionState)
-        placeholders = ",".join("?" for _ in valid_states)
+        placeholders = ",".join("?" for _ in VALID_SESSION_STATES)
         bad = src.execute(
-            f"SELECT COUNT(*) FROM sessions WHERE state NOT IN ({placeholders})", valid_states
+            f"SELECT COUNT(*) FROM sessions WHERE state NOT IN ({placeholders})", VALID_SESSION_STATES
         ).fetchone()[0]
         if bad:
             raise _invalid_db("存在非法的会话 state 值")

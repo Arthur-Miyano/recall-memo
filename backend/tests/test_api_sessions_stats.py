@@ -191,7 +191,6 @@ class TestStatsApi:
         self._answer_two_questions(client, fake_llm)
         data = client.get("/api/stats/per-question").json()
         assert data["total"] == 3
-        by_id = {i["question_id"]: i for i in data["items"]}
         done = [i for i in data["items"] if i["status"] == "done"]
         weak = [i for i in data["items"] if i["status"] == "weak"]
         todo = [i for i in data["items"] if i["status"] == "todo"]

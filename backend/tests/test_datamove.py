@@ -9,6 +9,7 @@ import sqlite3
 from datetime import date, datetime
 from pathlib import Path
 
+from sqlalchemy import text
 from sqlmodel import SQLModel, create_engine, select
 from sqlmodel import Session as DBSession
 
@@ -168,6 +169,9 @@ class TestImportMerge:
         # 追问组 question_ids 已重映射
         g = db.exec(select(models.QuestionGroup)).one()
         assert sorted(g.question_ids) == sorted([existing_q.id, new_q.id])
+
+        # §6.3：合并导入后全库外键无孤儿
+        assert db.execute(text("PRAGMA foreign_key_check")).fetchall() == []
 
     def test_import_twice_is_idempotent(self, client, db, tmp_path):
         _seed_current(db)

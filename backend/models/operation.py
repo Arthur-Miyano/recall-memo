@@ -42,8 +42,8 @@ class WorkflowOperation(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     # 客户端生成的幂等键：一次提交一个键，失败重试复用同键；唯一索引保证并发下同键只落一条
     idempotency_key: str = Field(unique=True, description="客户端幂等键（重试复用同键）")
-    session_id: int = Field(index=True, description="所属会话 id")
-    question_id: Optional[int] = Field(default=None, description="操作针对的题目 id")
+    session_id: int = Field(index=True, foreign_key="sessions.id", description="所属会话 id")
+    question_id: Optional[int] = Field(default=None, foreign_key="questions.id", description="操作针对的题目 id")
     question_index: Optional[int] = Field(default=None, description="提交时的会话题目序号")
     operation_type: str = Field(description="answer / skip / generate_question / review")
     status: str = Field(default=OperationStatus.PENDING.value, index=True, description="PENDING / RUNNING / SUCCEEDED / FAILED")
