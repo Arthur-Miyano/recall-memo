@@ -36,29 +36,40 @@ onMounted(async () => {
 function toggleDrawer(i) {
   openIdx.value = openIdx.value === i ? null : i
 }
-// 可选项胶囊：组内单选
-function pickOpt(di, gi, oi) {
-  optSel.value[di][gi] = oi
-}
 
 // CTA 跳转：把抽屉里选的题量/技术栈带过去
 const MEMORIZE_COUNTS = [3, 5, 7]
 const INTERVIEW_COUNTS = [3, 4, 5]
+// 记忆训练题量自由输入（1~20）：非空时优先于胶囊选择，并取消胶囊高亮
+const customCount = ref('')
 // 取选中项的 value：技术栈组 options 为 [{value, label}]（对象），题量组仍是字符串数组（原样透传）
 function optValue(g, oi) {
   const o = g.options[oi]
   return (o && typeof o === 'object') ? o.value : o
 }
+// 可选项胶囊：组内单选；点记忆训练题量胶囊时清空自由输入
+function pickOpt(di, gi, oi) {
+  optSel.value[di][gi] = oi
+  if (di === 0 && gi === 1) customCount.value = ''
+}
+function onCountInput() {
+  if (customCount.value !== '') optSel.value[0][1] = -1
+}
+function memorizeCount() {
+  const n = parseInt(customCount.value, 10)
+  if (!Number.isNaN(n)) return Math.min(20, Math.max(1, n))
+  return MEMORIZE_COUNTS[optSel.value[0][1]] ?? 3
+}
 function go(di) {
   if (di === 0) {
-    // NO.01 记忆训练：组 0 = 技术栈（取选中项 value），组 1 = 题量（按下标映射数量）
+    // NO.01 记忆训练：组 0 = 技术栈（取选中项 value），组 1 = 题量（胶囊或自由输入）
     // fresh 时间戳：每次点击「开始记忆」都开新一轮抽题；切页返回（无新 fresh）则恢复原题
     const groups = data.value.drawers[0].optGroups
     router.push({
       path: '/memorize',
       query: {
         stack: optValue(groups[0], optSel.value[0][0]),
-        count: MEMORIZE_COUNTS[optSel.value[0][1]],
+        count: memorizeCount(),
         fresh: String(Date.now()),
       },
     })
@@ -131,6 +142,17 @@ function resumeMemorize() {
                 :class="[g.seal && 'opt--seal', { on: optSel[di][gi] === oi }]"
                 @click.stop="pickOpt(di, gi, oi)"
               >{{ (o && typeof o === 'object') ? o.label : o }}</button>
+              <!-- 记忆训练题量：胶囊之外的自由输入（1~20 题） -->
+              <input
+                v-if="di === 0 && gi === 1"
+                v-model="customCount"
+                class="opt opt-count"
+                type="number" min="1" max="20" step="1"
+                placeholder="自定义"
+                title="自由输入 1~20 题"
+                @click.stop
+                @input="onCountInput"
+              >
             </div>
           </div>
           <div class="drawer-cta">
@@ -159,4 +181,7 @@ function resumeMemorize() {
 /* 技术栈 label 后端给的是显示名（如 "Python"），全大写效果交给 CSS，不再在数据里硬写大写 */
 .opt--seal { text-transform: uppercase; }
 .resume-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+/* 题量自由输入框：与胶囊同风格，圆角描边 */
+.opt-count { width: 96px; padding: 5px 14px; cursor: text; }
+.opt-count:focus { border-color: var(--ink); color: var(--ink); outline: none; }
 </style>

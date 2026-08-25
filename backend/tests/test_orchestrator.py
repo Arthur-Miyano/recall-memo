@@ -43,10 +43,13 @@ class TestCreateValidation:
         with pytest.raises(StateError, match="未知模式"):
             await orch.run("create_session", db=db, mode="xxx")
 
-    async def test_memorize_count_whitelist(self, orch, db, seed_questions):
+    async def test_memorize_count_free_range(self, orch, db, seed_questions, fake_llm):
+        """记忆训练题量改为 1~20 自由输入：4 题合法，超出范围拒绝。"""
         seed_questions(7)
-        with pytest.raises(StateError, match="题量仅支持"):
-            await orch.run("create_session", db=db, mode="memorize", count=4)
+        created = await orch.run("create_session", db=db, mode="memorize", count=4)
+        assert len(created["questions"]) == 4
+        with pytest.raises(StateError, match="题量范围"):
+            await orch.run("create_session", db=db, mode="memorize", count=21)
 
     async def test_interview_count_range(self, orch, db, seed_questions):
         seed_questions(6)

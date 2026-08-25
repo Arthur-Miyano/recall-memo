@@ -18,7 +18,7 @@ router = APIRouter(prefix="/sessions", tags=["sessions"])
 class CreateSessionRequest(BaseModel):
     mode: str = "memorize"  # memorize（记忆训练）/ interview（面试模拟）/ review（回忆）
     stack: Optional[str] = None  # 技术栈筛选：python / agent / vue3 / mixed
-    count: int = Field(default=3, ge=1, le=10)  # 各模式题量上限在总控按模式校验
+    count: int = Field(default=3, ge=1, le=20)  # 各模式题量上限在总控按模式校验
 
 
 class AnswerRequest(BaseModel):

@@ -21,9 +21,9 @@ class StateError(RuntimeError):
     """非法的状态跳转或会话状态不满足操作要求。"""
 
 
-# 各模式的题量限制，见文档 2.3
+# 各模式的题量限制：memorize 自由输入（1~20），interview/review 保持小范围
 MODE_COUNT_RULES = {
-    "memorize": (3, 7, {3, 5, 7}),
+    "memorize": (1, 20, None),
     "interview": (3, 5, None),
     "review": (1, 10, None),
 }
