@@ -1,1 +1,2 @@
 *.pdf binary
+*.bat text eol=crlf
