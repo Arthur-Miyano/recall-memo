@@ -171,6 +171,9 @@ docs/       需求文档、方案设计、页面截图
 
 后端测试：`cd backend && pytest tests/ -q`（459 项，带覆盖率门禁：生产代码行覆盖率 ≥ 90%）
 
+> 测试临时目录（`tmp_path`）已配置自动清理（`tmp_path_retention_policy = none`），
+> 每次运行结束后自动删除，不会堆积 `.pytest-tmp-*` 目录。
+
 前端测试：`cd frontend && npm test`（35 项：保存队列与面试倒计时的行为回归测试）
 
 ## 备注
