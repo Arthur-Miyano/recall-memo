@@ -5,9 +5,12 @@ __pycache__/
 node_modules/
 dist/
 *.db
+*.db-shm
+*.db-wal
 *.db.bak*
 *.sqlite3
 data/backup*/
+.idea/
 .DS_Store
 .tmp/
 .pytest-tmp/
