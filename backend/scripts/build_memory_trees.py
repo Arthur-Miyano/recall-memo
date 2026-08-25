@@ -46,14 +46,24 @@ def main() -> None:
         return
     print(f"待生成 {len(questions)} 题（批大小 {args.batch_size}）")
 
+    done, failed = asyncio.run(_run(questions, args.batch_size))
+    print(f"结束：成功 {done}，失败 {failed}。")
+
+
+async def _run(questions: list[Question], batch_size: int) -> tuple[int, int]:
+    """整个批量循环跑在同一个事件循环里。
+
+    LLM 客户端是惰性单例 httpx.AsyncClient，绑定首次创建时的事件循环；
+    若每批都 asyncio.run()，第二批会拿到已关闭循环上的客户端而崩溃。
+    """
     done = failed = 0
-    for i in range(0, len(questions), args.batch_size):
-        batch = questions[i : i + args.batch_size]
+    for i in range(0, len(questions), batch_size):
+        batch = questions[i : i + batch_size]
         items = [{"id": q.id, "stem": q.stem, "answer": q.answer} for q in batch]
         try:
-            trees = asyncio.run(generate_memory_trees_batch(items))
+            trees = await generate_memory_trees_batch(items)
         except LLMError as exc:
-            print(f"批次 {i // args.batch_size + 1} 失败（{exc}），跳过 {len(batch)} 题")
+            print(f"批次 {i // batch_size + 1} 失败（{exc}），跳过 {len(batch)} 题")
             failed += len(batch)
             continue
         with DBSession(engine) as db:
@@ -67,8 +77,7 @@ def main() -> None:
                 done += 1
                 print(f"  题 #{q.id} 完成：{tree['title']}（{len(tree['children'])} 个一级要点）")
             db.commit()
-
-    print(f"结束：成功 {done}，失败 {failed}。")
+    return done, failed
 
 
 if __name__ == "__main__":
