@@ -132,7 +132,7 @@ class MemoryTreeNode(BaseModel):
     """记忆树节点：要点名 + 原文摘句 + 子节点（递归）。"""
 
     title: str = Field(min_length=1, max_length=80)
-    note: str = Field(default="", max_length=300)
+    note: str = Field(default="", max_length=500)
     children: list["MemoryTreeNode"] = Field(default_factory=list)
 
 
