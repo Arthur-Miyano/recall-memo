@@ -28,7 +28,7 @@ export function useMemorizeSession() {
   const sessionId = ref(null)
   const topLeft = ref(m.topLeft)
   const topRight = ref(m.topRight)
-  const questions = ref(m.questions)      // 阶段一：{no, title, retry, answer}
+  const questions = ref(m.questions)      // 阶段一：{no, title, retry, answer, memoryTree}
   const kwMap = {}                        // question_id → keywords（create_session 返回）
   const quiz = ref({                      // 阶段二当前题
     question: m.quiz.question,
@@ -112,7 +112,7 @@ export function useMemorizeSession() {
     topRight.value = `${d.state} — ${mode === 'review' ? '回忆中' : '记忆中'}`
     questions.value = d.questions.map((q, i) => {
       kwMap[q.question_id] = q.keywords || []
-      return { no: `题 ${i + 1} / ${d.questions.length}`, title: q.stem, retry: q.retry, answer: q.answer }
+      return { no: `题 ${i + 1} / ${d.questions.length}`, title: q.stem, retry: q.retry, answer: q.answer, memoryTree: q.memory_tree || null }
     })
   }
 

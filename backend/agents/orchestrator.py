@@ -497,7 +497,15 @@ class OrchestratorAgent(BaseAgent):
         report = session.context.get("review_report")
         if not report:
             raise StateError("复盘报告尚未生成")
+        attach_memory_trees(db, report)
         return report
+
+
+def attach_memory_trees(db: DBSession, report: dict[str, Any]) -> None:
+    """展示层需要记忆树：按 question_id 现查附加（题已删除则为 None），不写回缓存快照。"""
+    for item in report.get("per_question", []):
+        question = db.get(Question, item.get("question_id"))
+        item["memory_tree"] = question.memory_tree if question else None
 
 
 def get_session_info(db: DBSession, session_id: int) -> dict[str, Any]:

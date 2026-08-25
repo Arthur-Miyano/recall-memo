@@ -13,6 +13,23 @@ export const memorizeSession = {
       title: 'Python 的 GIL 是什么？对多线程有何影响？',
       retry: true, // 「待补答」红标
       answer: 'GIL（全局解释器锁）是 CPython 中的互斥锁，保证同一时刻只有一个线程执行字节码。它存在的根本原因是引用计数的内存管理不是线程安全的。CPU 密集型任务无法利用多核，应改用多进程；I/O 密集型任务中线程等待时会释放 GIL，仍有并发收益。',
+      // 记忆树示例（对应后端 question.memory_tree）：有树时展示阶段左树右文双栏
+      memoryTree: {
+        title: 'GIL 要点',
+        note: '',
+        children: [
+          { title: '是什么', note: 'CPython 互斥锁，同一时刻只有一个线程执行字节码', children: [] },
+          { title: '为什么存在', note: '引用计数的内存管理不是线程安全的', children: [] },
+          {
+            title: '影响与对策',
+            note: '',
+            children: [
+              { title: 'CPU 密集：多核失效，改用多进程', note: '', children: [] },
+              { title: 'I/O 密集：线程等待时释放 GIL，仍有并发收益', note: '', children: [] },
+            ],
+          },
+        ],
+      },
     },
     {
       no: '题 2 / 3',

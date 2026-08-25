@@ -291,6 +291,10 @@ body::before {
 .compare mark { background:transparent; color:inherit; padding:0 1px; }
 .compare mark.mk-omiss { color: var(--seal); background: rgba(192,57,43,.08); border-bottom:1.5px solid var(--seal); }
 .compare mark.mk-logic { color: var(--logic); background: rgba(46,76,109,.08); border-bottom:1.5px dashed var(--logic); }
+/* 复盘标准答案区的记忆树双栏：左树右原文（右栏标注渲染逻辑不变），中间 1px 分隔线 */
+.std-cols { display:flex; gap:16px; }
+.std-cols .mt-col { flex:none; width:38%; }
+.std-cols .std-text { flex:1; min-width:0; border-left:1px solid var(--ink-25); padding-left:16px; }
 .paper .stamp { position:absolute; top:64px; right:22px; font-size:15px; }
 /* 薄弱点分析 */
 .weak-list { columns:2; column-gap:40px; font-size:14px; line-height:2; }
@@ -538,6 +542,11 @@ body::before {
 .mem-q.mem-click .paper-head { cursor:pointer; }
 .mem-q .answer { font-size:14.5px; line-height:2; color: var(--ink); }
 .mem-q .answer .lbl { font-family: var(--mono); font-size:10px; letter-spacing:.14em; color: var(--ink-45); display:block; margin-bottom:6px; }
+/* 记忆树双栏（有 memory_tree 时）：左树右原文，中间 1px 分隔线；无树保持单栏。组件见 components/MemoryTree.vue */
+.mt-col .lbl { font-family: var(--mono); font-size:10px; letter-spacing:.14em; color: var(--ink-45); display:block; margin-bottom:6px; }
+.answer-cols.with-tree { display:flex; gap:18px; }
+.answer-cols.with-tree .mt-col { flex:none; width:38%; }
+.answer-cols.with-tree .answer { flex:1; min-width:0; border-left:1px solid var(--ink-25); padding-left:18px; }
 .mem-actions { display:flex; gap:14px; align-items:center; margin-top:26px; }
 /* 考核态 */
 .quiz-zone { display:none; }
@@ -634,6 +643,10 @@ body::before {
 /* 答案区：比卡片更宽松的阅读排版 */
 .pm-answer { font-size:15px; line-height:2.05; color: var(--ink); white-space:pre-wrap; }
 .pm-answer .lbl { font-family: var(--mono); font-size:10px; letter-spacing:.14em; color: var(--ink-45); display:block; margin-bottom:6px; }
+/* 放大弹层的记忆树双栏（同 .answer-cols.with-tree） */
+.pm-answer-cols.with-tree { display:flex; gap:20px; }
+.pm-answer-cols.with-tree .mt-col { flex:none; width:38%; }
+.pm-answer-cols.with-tree .pm-answer { flex:1; min-width:0; border-left:1px solid var(--ink-25); padding-left:20px; }
 /* 上/下题导航条 */
 .pm-nav {
   display:flex; align-items:center; justify-content:space-between; gap:12px;

@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from sqlmodel import Session as DBSession, select
 
 from agents import OperationConflictError, StateError, orchestrator
-from agents.orchestrator import get_session_info
+from agents.orchestrator import attach_memory_trees, get_session_info
 from api.deps import get_db
 from models import Question, RetryQueueItem, Session
 
@@ -145,7 +145,9 @@ def latest_review(db: DBSession = Depends(get_db)):
     ).first()
     if session is None or not (session.context or {}).get("review_report"):
         raise HTTPException(status_code=404, detail="暂无复盘报告，请先完成一场面试模拟")
-    return session.context["review_report"]
+    report = session.context["review_report"]
+    attach_memory_trees(db, report)
+    return report
 
 
 @router.post("/{session_id}/retry")

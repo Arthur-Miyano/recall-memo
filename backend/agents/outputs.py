@@ -123,6 +123,42 @@ def validate_imported_questions(data: list[Any]) -> list[dict[str, Any]]:
     return items
 
 
+# 记忆树约束（背诵页左栏层级大纲）：深度与总节点数限制，防止 LLM 输出失控
+MAX_TREE_DEPTH = 4
+MAX_TREE_NODES = 40
+
+
+class MemoryTreeNode(BaseModel):
+    """记忆树节点：要点名 + 原文摘句 + 子节点（递归）。"""
+
+    title: str = Field(min_length=1, max_length=80)
+    note: str = Field(default="", max_length=300)
+    children: list["MemoryTreeNode"] = Field(default_factory=list)
+
+
+def validate_memory_tree(data: Any) -> Optional[dict[str, Any]]:
+    """校验并归一化记忆树：结构非法、超深或超节点数时返回 None（调用方降级）。
+
+    不过度压缩的要求靠 prompt 约束；这里只保证结构安全（深度/节点数/长度）。
+    """
+    try:
+        root = MemoryTreeNode.model_validate(data)
+    except ValidationError:
+        return None
+
+    def _walk(node: MemoryTreeNode, depth: int, counter: list[int]) -> bool:
+        if depth > MAX_TREE_DEPTH:
+            return False
+        counter[0] += 1
+        if counter[0] > MAX_TREE_NODES:
+            return False
+        return all(_walk(c, depth + 1, counter) for c in node.children)
+
+    if not _walk(root, 1, [0]):
+        return None
+    return root.model_dump()
+
+
 # 助理动作允许编辑的字段（与 api/assistant 的协议一致）
 ASSISTANT_EDIT_FIELDS = {"stem", "answer", "tech_stack", "difficulty", "keywords", "tags"}
 

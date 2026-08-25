@@ -19,6 +19,7 @@ import { memorizeSession as m } from '../mock/memorize'
 import { exportRecallCard } from '../utils/recallCard'
 import { useMemorizeSession } from '../composables/useMemorizeSession'
 import NoteSaver from '../components/NoteSaver.vue'
+import MemoryTree from '../components/MemoryTree.vue'
 
 const router = useRouter()
 
@@ -125,7 +126,11 @@ async function exportCard() {
             <h3>{{ q.title }}</h3>
             <span class="retry-flag" v-if="q.retry">待补答</span>
           </div>
-          <div class="answer" @contextmenu="onNoteSelect($event, q.title)"><span class="lbl">标准答案</span>{{ q.answer }}</div>
+          <!-- 有记忆树时双栏（左树右原文），无树保持单栏 -->
+          <div class="answer-cols" :class="{ 'with-tree': q.memoryTree }">
+            <div class="mt-col" v-if="q.memoryTree"><span class="lbl">记忆树</span><MemoryTree :node="q.memoryTree" /></div>
+            <div class="answer" @contextmenu="onNoteSelect($event, q.title)"><span class="lbl">标准答案</span>{{ q.answer }}</div>
+          </div>
         </div>
         <div class="mem-actions">
           <button class="btn" :disabled="!canWrite" @click="startQuiz">我记好了，开始考核 →</button>
@@ -207,7 +212,10 @@ async function exportCard() {
         </div>
         <div class="pm-body">
           <div class="pm-q">{{ questions[zoomIdx].title }}</div>
-          <div class="pm-answer" @contextmenu="onNoteSelect($event, questions[zoomIdx].title)"><span class="lbl">标准答案</span>{{ questions[zoomIdx].answer }}</div>
+          <div class="pm-answer-cols" :class="{ 'with-tree': questions[zoomIdx].memoryTree }">
+            <div class="mt-col" v-if="questions[zoomIdx].memoryTree"><span class="lbl">记忆树</span><MemoryTree :node="questions[zoomIdx].memoryTree" /></div>
+            <div class="pm-answer" @contextmenu="onNoteSelect($event, questions[zoomIdx].title)"><span class="lbl">标准答案</span>{{ questions[zoomIdx].answer }}</div>
+          </div>
         </div>
         <div class="pm-nav">
           <button :disabled="zoomIdx === 0" @click="zoomPrev">← 上一题</button>

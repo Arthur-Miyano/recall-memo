@@ -368,3 +368,59 @@ class TestExpiredSession:
     async def test_missing_session_raises(self, orch, db):
         with pytest.raises(StateError, match="会话不存在"):
             await orch.run("answer", db=db, session_id=9999, answer="x")
+
+
+# ---------------------------------------------------------------------------
+# 记忆树（展示层数据）
+# ---------------------------------------------------------------------------
+
+_SAMPLE_TREE = {
+    "title": "答案大纲",
+    "note": "",
+    "children": [{"title": "要点一", "note": "展开说明", "children": []}],
+}
+
+
+class TestMemoryTree:
+    async def test_create_session_payload_includes_memory_tree(self, orch, db, seed_questions):
+        """展示阶段载荷带 memory_tree：有树给树，无树为 None。"""
+        questions = seed_questions(2)
+        questions[0].memory_tree = _SAMPLE_TREE
+        db.add(questions[0])
+        db.commit()
+
+        created = await orch.run("create_session", db=db, mode="memorize", count=2)
+        by_id = {q["question_id"]: q for q in created["questions"]}
+        assert by_id[questions[0].id]["memory_tree"] == _SAMPLE_TREE
+        assert by_id[questions[1].id]["memory_tree"] is None
+
+    async def test_review_per_question_includes_memory_tree(self, orch, db, seed_questions, fake_llm):
+        """复盘 per_question 附记忆树：get_review 现查 Question，题已删除则为 None。"""
+        _set_score(fake_llm, 88)
+        questions = seed_questions(3)
+        created = await orch.run("create_session", db=db, mode="interview", count=3)
+        sid = created["session_id"]
+        for _ in range(2):
+            resp = await orch.run("answer", db=db, session_id=sid, answer="答。")
+            assert resp["finished"] is False
+        resp = await orch.run("answer", db=db, session_id=sid, answer="答。")
+        assert resp["finished"] is True
+
+        # 报告生成后再挂树；另往缓存报告追加一个不存在题目的条目，覆盖"题已删除"分支
+        # （真实删题受 records/sessions 等多张表外键约束，这里等价模拟 get_review 查不到的情形）
+        questions[0].memory_tree = _SAMPLE_TREE
+        db.add(questions[0])
+        session = db.get(Session, sid)
+        context = {**session.context}
+        report = dict(context["review_report"])
+        report["per_question"] = [*report["per_question"], {"question_id": 99999}]
+        context["review_report"] = report
+        session.context = context
+        db.add(session)
+        db.commit()
+
+        review = await orch.run("review", db=db, session_id=sid)
+        by_id = {e["question_id"]: e for e in review["per_question"]}
+        assert by_id[questions[0].id]["memory_tree"] == _SAMPLE_TREE
+        assert by_id[questions[1].id]["memory_tree"] is None
+        assert by_id[99999]["memory_tree"] is None  # 题已删除

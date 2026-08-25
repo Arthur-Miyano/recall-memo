@@ -116,6 +116,8 @@ class SessionWorkflow:
         }
         if with_answer:
             payload["answer"] = question.answer
+            # 记忆树缓存（无树则为 None，前端据此决定单栏/双栏展示）
+            payload["memory_tree"] = question.memory_tree
         return payload
 
     @staticmethod

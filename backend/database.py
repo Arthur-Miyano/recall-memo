@@ -69,7 +69,7 @@ def ensure_indexes() -> None:
 # ----------------------------------------------------------------------
 
 # 当前 schema 版本：新增迁移时在 MIGRATIONS 末尾追加并 +1
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 def _migrate_1_records_annotated_answer(conn) -> None:
@@ -181,6 +181,13 @@ def _migrate_7_backfill_retry_queue(conn) -> None:
     )
 
 
+def _migrate_8_questions_memory_tree(conn) -> None:
+    """v8：questions 补 memory_tree 列（记忆树层级大纲缓存）。"""
+    cols = {row[1] for row in conn.execute(text("PRAGMA table_info(questions)"))}
+    if "memory_tree" not in cols:
+        conn.execute(text("ALTER TABLE questions ADD COLUMN memory_tree TEXT"))
+
+
 # (版本号, 名称, 迁移函数)：函数接收一个事务内 Connection，只写 DDL/DML，不自行提交
 MIGRATIONS: list[tuple[int, str, Callable[[Any], None]]] = [
     (1, "records_annotated_answer", _migrate_1_records_annotated_answer),
@@ -190,6 +197,7 @@ MIGRATIONS: list[tuple[int, str, Callable[[Any], None]]] = [
     (5, "sessions_version", _migrate_5_sessions_version),
     (6, "records_operation_id", _migrate_6_records_operation_id),
     (7, "backfill_retry_queue", _migrate_7_backfill_retry_queue),
+    (8, "questions_memory_tree", _migrate_8_questions_memory_tree),
 ]
 
 

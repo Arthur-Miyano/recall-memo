@@ -25,6 +25,8 @@ class Question(SQLModel, table=True):
     tags: list[str] = Field(default_factory=list, sa_column=Column(JSON), description="标签列表")
     # 已生成过的变体题干缓存：面试官 Agent 每次生成后追加，用于下次生成时避免重复
     variants: list[str] = Field(default_factory=list, sa_column=Column(JSON), description="变体题干缓存")
+    # 记忆树缓存（层级大纲 JSON，由 build_memory_trees 脚本/懒生成写入；编辑答案时清空）
+    memory_tree: Optional[dict] = Field(default=None, sa_column=Column(JSON), description="记忆树缓存（层级大纲）")
     created_at: datetime = Field(default_factory=_utcnow, description="创建时间")
 
 

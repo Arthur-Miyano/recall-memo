@@ -16,6 +16,7 @@ import { reactive, ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { reviewReport as rv } from '../mock/review'
 import { getReview, getLatestReview } from '../api'
+import MemoryTree from '../components/MemoryTree.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -76,6 +77,7 @@ function toPapers(report) {
     ] : null,
     yourAnswer: q.skipped ? '（跳过未作答）' : q.user_answer,
     stdAnswer: q.standard_answer,
+    memoryTree: q.memory_tree || null,   // 记忆树：有树时标准答案区左树右文双栏展示
     // 标注版标准答案片段（红=遗漏 / 靛蓝=逻辑），旧数据无标注时为 null，按原文纯文本展示
     stdSegments: parseAnnotated(q.annotated_answer),
     misses: q.score?.missed_points?.length ? q.score.missed_points.map(p => `遗漏：${p}`) : null,
@@ -225,7 +227,10 @@ function cells(v) { return Math.floor(v / 10) }
             <div><span class="lbl">你的回答</span>{{ p.yourAnswer }}</div>
             <div>
               <span class="lbl">标准答案</span>
-              <template v-if="p.stdSegments"><template v-for="(s, si) in p.stdSegments" :key="si"><mark v-if="s.kind" :class="'mk-' + s.kind">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template></template><template v-else>{{ p.stdAnswer }}</template>
+              <div :class="{ 'std-cols': p.memoryTree }">
+                <div class="mt-col" v-if="p.memoryTree"><MemoryTree :node="p.memoryTree" /></div>
+                <div class="std-text"><template v-if="p.stdSegments"><template v-for="(s, si) in p.stdSegments" :key="si"><mark v-if="s.kind" :class="'mk-' + s.kind">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template></template><template v-else>{{ p.stdAnswer }}</template></div>
+              </div>
             </div>
           </div>
           <ul class="miss" style="margin-top:14px" v-if="p.misses">
@@ -271,7 +276,10 @@ function cells(v) { return Math.floor(v / 10) }
             <div><span class="lbl">你的回答</span>{{ zoomPaper.yourAnswer }}</div>
             <div>
               <span class="lbl">标准答案</span>
-              <template v-if="zoomPaper.stdSegments"><template v-for="(s, si) in zoomPaper.stdSegments" :key="si"><mark v-if="s.kind" :class="'mk-' + s.kind">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template></template><template v-else>{{ zoomPaper.stdAnswer }}</template>
+              <div :class="{ 'std-cols': zoomPaper.memoryTree }">
+                <div class="mt-col" v-if="zoomPaper.memoryTree"><MemoryTree :node="zoomPaper.memoryTree" /></div>
+                <div class="std-text"><template v-if="zoomPaper.stdSegments"><template v-for="(s, si) in zoomPaper.stdSegments" :key="si"><mark v-if="s.kind" :class="'mk-' + s.kind">{{ s.text }}</mark><template v-else>{{ s.text }}</template></template></template><template v-else>{{ zoomPaper.stdAnswer }}</template></div>
+              </div>
             </div>
           </div>
           <ul class="miss" style="margin-top:14px" v-if="zoomPaper.misses">
