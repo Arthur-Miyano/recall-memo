@@ -67,6 +67,7 @@ export function useMemorizeSession() {
   // 只有首页「开始记忆」带新 fresh token 跳转时才重开一轮；其余入口（含浏览器后退）都恢复快照
   function saveSnapshot(fresh) {
     sessionStore.saveMemorize({
+      mode: route.query.mode === 'review' ? 'review' : 'memorize',
       fresh: fresh ?? sessionStore.memorize?.fresh ?? null,
       sessionId: sessionId.value,
       topLeft: topLeft.value,

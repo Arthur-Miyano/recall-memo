@@ -45,6 +45,13 @@ export const useSessionStore = defineStore('session', {
     interview: null,
     ...loadPersisted(),
   }),
+  getters: {
+    canResumeMemorize: (state) => Boolean(
+      state.memorize?.sessionId
+      && !state.memorize.finished
+      && !state.memorize.useMock
+    ),
+  },
   actions: {
     // 保存快照（自动盖版本/同步时间戳并持久化）；draft 字段即未提交的输入草稿
     saveMemorize(snap) { this.memorize = stamp(snap); persist(this) },

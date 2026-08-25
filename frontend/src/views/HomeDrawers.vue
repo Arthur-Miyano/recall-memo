@@ -6,12 +6,15 @@
 //   - 抽屉开合用 grid-template-rows 0fr→1fr 过渡（.drawer.open）
 //   - 手风琴：纯点击切换，同时只展开一个，默认展开 NO.01 记忆训练
 //   - 文件夹凸舌随 hover/open 上移（CSS .drawer::before）
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { homeSummary as mockHome } from '../mock/home'
 import { getHomeSummary } from '../api'
+import { useSessionStore } from '../stores/session'
 
 const router = useRouter()
+const sessionStore = useSessionStore()
+const canResumeMemorize = computed(() => sessionStore.canResumeMemorize)
 // 先用 mock 渲染骨架，真实数据到位后整体替换
 const data = ref(mockHome)
 
@@ -72,6 +75,13 @@ function go(di) {
     router.push({ path: '/memorize', query: { mode: 'review', fresh: String(Date.now()) } })
   }
 }
+
+function resumeMemorize() {
+  router.push({
+    path: '/memorize',
+    query: sessionStore.memorize?.mode === 'review' ? { mode: 'review' } : {},
+  })
+}
 </script>
 
 <template>
@@ -124,7 +134,14 @@ function go(di) {
             </div>
           </div>
           <div class="drawer-cta">
-            <button class="btn" @click="go(di)">{{ d.cta }}</button>
+            <div class="resume-actions">
+              <button
+                v-if="di === 0 && canResumeMemorize"
+                class="btn btn--ghost"
+                @click="resumeMemorize"
+              >继续上次记忆 →</button>
+              <button class="btn" @click="go(di)">{{ di === 0 && canResumeMemorize ? '开始新一轮 →' : d.cta }}</button>
+            </div>
             <span class="iv-note">{{ d.note }}</span>
           </div>
         </div></div>
@@ -141,4 +158,5 @@ function go(di) {
 <style scoped>
 /* 技术栈 label 后端给的是显示名（如 "Python"），全大写效果交给 CSS，不再在数据里硬写大写 */
 .opt--seal { text-transform: uppercase; }
+.resume-actions { display: flex; flex-wrap: wrap; gap: 10px; }
 </style>
