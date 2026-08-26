@@ -13,6 +13,7 @@
 //   图谱     → /api/bank/overview + /api/stats/per-question（大画布，节点点击看题干/答案/得分记录）
 //   建议     → /api/stats/per-question + /api/sessions/retry-queue + POST /api/assistant/chat {quick:plan}
 // 录入题库：ImportPanel → POST /api/bank/import，入库成功后重拉卡片数据
+// 记忆树提取：MemtreePanel → /api/memtree（覆盖统计 + 后台生成任务，面板内自管理）
 // 图表说明：折线与知识图谱为手绘 SVG（图纸感直角转折、像素方块节点），
 //   有意不用 ECharts —— 像素美学是设计的一部分
 // 结构：卡片数据加载在 composables/useDashboardData.js；图表数据映射纯函数在 utils/dashboardMapping.js
@@ -20,6 +21,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import SettingsPanel from '../components/SettingsPanel.vue'
 import DashboardModal from '../components/DashboardModal.vue'
 import ImportPanel from '../components/ImportPanel.vue'
+import MemtreePanel from '../components/MemtreePanel.vue'
 import InkCalendar from '../components/InkCalendar.vue'
 import { getStatsDaily, getBankOverview, getLlmUsage, offline } from '../api'
 import {
@@ -63,6 +65,7 @@ const modalKey = ref('')
 const modalData = ref(null)   // 当前放大视图的数据载荷（按 key 结构不同）
 const modalLoading = ref(false)
 const showImport = ref(false)
+const showMemtree = ref(false)
 
 const MODAL_META = {
   calendar: { title: '每日背诵记录 · 月历（近 90 天）', fig: 'FIG.04-A+' },
@@ -398,6 +401,14 @@ function onImported() { loadDashboard() }
           </ul>
           <span class="zoom-hint">点击打开 ▸</span>
         </div>
+        <!-- 记忆树提取入口 -->
+        <div class="db-panel db-click" @click="showMemtree = true">
+          <h2>记忆树提取 <span class="n">MEMTREE</span></h2>
+          <ul class="suggest">
+            <li><span class="d">AI</span><span class="t">把标准答案重组为层级大纲辅助背诵，按技术栈批量生成或补缺</span><span class="s">▸</span></li>
+          </ul>
+          <span class="zoom-hint">点击打开 ▸</span>
+        </div>
       </div>
     </div>
 
@@ -616,5 +627,7 @@ function onImported() { loadDashboard() }
 
     <!-- 录入题库 -->
     <ImportPanel v-if="showImport" @close="showImport = false" @done="onImported" />
+    <!-- 记忆树提取 -->
+    <MemtreePanel v-if="showMemtree" @close="showMemtree = false" />
   </section>
 </template>

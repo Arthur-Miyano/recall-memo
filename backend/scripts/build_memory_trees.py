@@ -34,10 +34,12 @@ def main() -> None:
 
     init_db()  # 确保迁移已应用（memory_tree 列存在）
     with DBSession(engine) as db:
-        stmt = select(Question).where(Question.memory_tree.is_(None)).order_by(Question.id)
+        stmt = select(Question).order_by(Question.id)
         if args.stack:
             stmt = stmt.where(Question.tech_stack == args.stack)
-        questions = list(db.exec(stmt).all())
+        # JSON 列 none_as_null=False：ORM 写入的 None 落库是字符串 'null'，IS NULL 查不到，
+        # 缺树判定放 Python 侧（读回时 'null' 反序列化为 None）
+        questions = [q for q in db.exec(stmt).all() if q.memory_tree is None]
         if args.limit:
             questions = questions[: args.limit]
 

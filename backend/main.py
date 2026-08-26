@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from api import assistant, bank, datamove, events as events_api, health, home, llm, notes, sessions, settings, stats
+from api import assistant, bank, datamove, events as events_api, health, home, llm, memtree, notes, sessions, settings, stats
 from application.uploads import UploadRejectedError
 from database import init_db
 from infrastructure.documents import DocumentParseError
@@ -132,6 +132,7 @@ app.include_router(datamove.router, prefix="/api")
 app.include_router(assistant.router, prefix="/api")
 app.include_router(notes.router, prefix="/api")
 app.include_router(events_api.router, prefix="/api")
+app.include_router(memtree.router, prefix="/api")
 
 # 生产模式：托管前端构建产物（frontend/dist），SPA 路由回退到 index.html
 # 开发模式不存在 dist 时跳过，走 Vite dev server + /api 代理

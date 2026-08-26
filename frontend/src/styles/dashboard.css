@@ -274,6 +274,12 @@
 }
 .ip-submit:hover:not(:disabled) { background: var(--seal); border-color: var(--seal); }
 .ip-submit:disabled { opacity: .5; cursor: wait; }
+/* 记忆树面板的技术栈下拉（纸墨输入控件，同 mig-input 约定） */
+.mt-select {
+  font-family: var(--sans); font-size: 13px; padding: 4px 8px;
+  border: 1px solid var(--ink-45); background: var(--paper); color: var(--ink);
+}
+.mt-select:focus { outline: none; border-color: var(--ink); }
 /* 结果清单 */
 .ip-result { margin-top: 18px; border-top: 1px solid var(--ink); padding-top: 14px; animation: screenIn .3s var(--ease-out); }
 .ip-result .sum { font-family: var(--mono); font-size: 12px; letter-spacing: .08em; color: var(--ink-70); margin-bottom: 10px; }
