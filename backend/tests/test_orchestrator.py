@@ -424,3 +424,26 @@ class TestMemoryTree:
         assert by_id[questions[0].id]["memory_tree"] == _SAMPLE_TREE
         assert by_id[questions[1].id]["memory_tree"] is None
         assert by_id[99999]["memory_tree"] is None  # 题已删除
+
+    def test_attach_memory_trees_stale_id_falls_back_to_stem(self, db, seed_questions):
+        """旧报告里的 question_id 因题库重导入而指向别的题：按题干快照找回原题，找不到则为 None。"""
+        from agents.orchestrator import attach_memory_trees
+
+        questions = seed_questions(2)
+        questions[0].memory_tree = _SAMPLE_TREE
+        db.add(questions[0])
+        db.commit()
+
+        report = {"per_question": [
+            # id 指向 questions[1]，但题干快照是 questions[0] 的：应按题干找回，挂上正确的树
+            {"question_id": questions[1].id, "stem": questions[0].stem},
+            # id 指向 questions[0]，题干也对得上：直接按 id 挂树
+            {"question_id": questions[0].id, "stem": questions[0].stem},
+            # 题干在题库里已不存在：不挂树，更不能挂错树
+            {"question_id": questions[0].id, "stem": "不存在的题干"},
+        ]}
+        attach_memory_trees(db, report)
+        items = report["per_question"]
+        assert items[0]["memory_tree"] == _SAMPLE_TREE
+        assert items[1]["memory_tree"] == _SAMPLE_TREE
+        assert items[2]["memory_tree"] is None

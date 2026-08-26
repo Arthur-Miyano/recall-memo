@@ -502,9 +502,16 @@ class OrchestratorAgent(BaseAgent):
 
 
 def attach_memory_trees(db: DBSession, report: dict[str, Any]) -> None:
-    """展示层需要记忆树：按 question_id 现查附加（题已删除则为 None），不写回缓存快照。"""
+    """展示层需要记忆树：按 question_id 现查附加（题已删除则为 None），不写回缓存快照。
+
+    报告是会话上下文里的快照：若题库后来被重新导入导致 id 重排，
+    按 id 查到的可能已是另一道题。题干对不上时按题干快照找回原题，找不到就显示无树。
+    """
     for item in report.get("per_question", []):
         question = db.get(Question, item.get("question_id"))
+        stem = item.get("stem")
+        if question is not None and stem and question.stem != stem:
+            question = db.exec(select(Question).where(Question.stem == stem)).first()
         item["memory_tree"] = question.memory_tree if question else None
 
 
