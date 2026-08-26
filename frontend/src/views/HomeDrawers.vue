@@ -11,6 +11,7 @@ import { useRouter } from 'vue-router'
 import { homeSummary as mockHome } from '../mock/home'
 import { getHomeSummary } from '../api'
 import { useSessionStore } from '../stores/session'
+import { loadHomePrefs, saveHomePref, resolveStackIndex, resolveCount } from '../utils/homePrefs'
 
 const router = useRouter()
 const sessionStore = useSessionStore()
@@ -27,10 +28,33 @@ onMounted(async () => {
   try {
     data.value = await getHomeSummary()
     optSel.value = data.value.drawers.map(d => d.optGroups.map(g => g.on))
+    applySavedPrefs()
   } catch (e) {
     console.warn('[home] 后端不可用，回退 mock 数据：', e.message)
   }
 })
+
+// 选择记忆：上一次点开始时存的技术栈/题量（localStorage），进来时覆盖默认值
+function applySavedPrefs() {
+  const prefs = loadHomePrefs()
+  const groups = data.value.drawers
+  if (prefs.memorize && groups[0]) {
+    const g = groups[0].optGroups
+    optSel.value[0][0] = resolveStackIndex(g[0].options, prefs.memorize.stack, optSel.value[0][0])
+    const c = resolveCount(prefs.memorize.count, MEMORIZE_COUNTS, optSel.value[0][1])
+    if (c.custom !== undefined) {
+      customCount.value = String(c.custom)
+      optSel.value[0][1] = -1
+    } else {
+      optSel.value[0][1] = c.index
+    }
+  }
+  if (prefs.interview && groups[1]) {
+    const g = groups[1].optGroups
+    optSel.value[1][0] = resolveStackIndex(g[0].options, prefs.interview.stack, optSel.value[1][0])
+    optSel.value[1][1] = resolveCount(prefs.interview.count, INTERVIEW_COUNTS, optSel.value[1][1]).index
+  }
+}
 
 // 手风琴切换：点击已展开的抽屉则收起，否则只展开被点击的那个
 function toggleDrawer(i) {
@@ -65,22 +89,21 @@ function go(di) {
     // NO.01 记忆训练：组 0 = 技术栈（取选中项 value），组 1 = 题量（胶囊或自由输入）
     // fresh 时间戳：每次点击「开始记忆」都开新一轮抽题；切页返回（无新 fresh）则恢复原题
     const groups = data.value.drawers[0].optGroups
+    const stack = optValue(groups[0], optSel.value[0][0])
+    const count = memorizeCount()
+    saveHomePref('memorize', { stack, count })
     router.push({
       path: '/memorize',
-      query: {
-        stack: optValue(groups[0], optSel.value[0][0]),
-        count: memorizeCount(),
-        fresh: String(Date.now()),
-      },
+      query: { stack, count, fresh: String(Date.now()) },
     })
   } else if (di === 1) {
     const groups = data.value.drawers[1].optGroups
+    const stack = optValue(groups[0], optSel.value[1][0])
+    const count = INTERVIEW_COUNTS[optSel.value[1][1]]
+    saveHomePref('interview', { stack, count })
     router.push({
       path: '/interview',
-      query: {
-        stack: optValue(groups[0], optSel.value[1][0]),
-        count: INTERVIEW_COUNTS[optSel.value[1][1]],
-      },
+      query: { stack, count },
     })
   } else {
     router.push({ path: '/memorize', query: { mode: 'review', fresh: String(Date.now()) } })
