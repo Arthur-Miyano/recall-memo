@@ -229,8 +229,9 @@ export const appendNote = (id, text, source = '') =>
   request(`/api/notes/${id}/append`, { method: 'POST', body: { text, source } })
 
 /* ---------- 会话流程（记忆训练 / 面试 / 回忆） ---------- */
-export const createSession = (mode, stack, count, opts) =>
-  request('/api/sessions', { method: 'POST', body: { mode, stack, count }, ...opts })
+// stacks：多选技术栈数组（如 ['python', 'agent']）；空数组或 ['mixed'] 表示不限栈
+export const createSession = (mode, stacks, count, opts) =>
+  request('/api/sessions', { method: 'POST', body: { mode, stacks, count }, ...opts })
 export const getSessionInfo = (sessionId, opts) => request(`/api/sessions/${sessionId}`, opts)
 export const startQuiz = (sessionId, opts) =>
   request(`/api/sessions/${sessionId}/start_quiz`, { method: 'POST', ...opts })

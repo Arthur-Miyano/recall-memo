@@ -20,6 +20,7 @@ import { decideRestore, draftStillValid } from '../utils/sessionRecovery'
 import { canSubmit, OFFLINE_WRITE_TIP } from '../utils/offlineGuard'
 import { useSessionStore } from '../stores/session'
 import { interviewSeconds, interviewTimedOut } from '../utils/interviewTimer'
+import { parseStacksQuery, stackLabel } from '../utils/stacks'
 
 const route = useRoute()
 const router = useRouter()
@@ -125,7 +126,7 @@ function restoreSnapshot(snap) {
 
 // 进入页面：先查服务端会话状态（唯一事实来源），再决定恢复 / 离线兜底 / 跳复盘 / 重建（§8.1）
 async function initSession() {
-  const stack = typeof route.query.stack === 'string' ? route.query.stack : null
+  const stacks = parseStacksQuery(route.query)
   const count = Number(route.query.count) || 4
   const snap = store.interview
   if (snap) {
@@ -180,9 +181,10 @@ async function initSession() {
   useMock.value = false
   loadError.value = ''
   try {
-    const d = await createSession('interview', stack, count, { signal: scope.signal })
+    const d = await createSession('interview', stacks, count, { signal: scope.signal })
     sessionId.value = d.session_id
-    topLeft.value = `INTERVIEW — ${(stack || 'mixed') === 'mixed' ? '混合场' : String(stack).toUpperCase()} ${d.question_count} 题`
+    const label = stackLabel(stacks)
+    topLeft.value = `INTERVIEW — ${label === 'MIXED' ? '混合场' : label} ${d.question_count} 题`
     applyQuestion(d.first_question)
   } catch (e) {
     if (scope.signal.aborted) return

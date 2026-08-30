@@ -447,3 +447,67 @@ class TestMemoryTree:
         assert items[0]["memory_tree"] == _SAMPLE_TREE
         assert items[1]["memory_tree"] == _SAMPLE_TREE
         assert items[2]["memory_tree"] is None
+
+
+# ---------------------------------------------------------------------------
+# 多选技术栈抽题（tech_stacks）
+# ---------------------------------------------------------------------------
+
+class TestMultiStackSelection:
+    async def test_memorize_multi_stack(self, orch, db, seed_questions):
+        """多选技术栈：python+agent 同时抽题，不混入其他栈。"""
+        seed_questions(3, stack="python")
+        seed_questions(3, stack="agent")
+        seed_questions(2, stack="java")
+        created = await orch.run(
+            "create_session", db=db, mode="memorize", count=6, tech_stacks=["python", "agent"]
+        )
+        assert len(created["questions"]) == 6
+        assert {q["tech_stack"] for q in created["questions"]} == {"python", "agent"}
+
+    async def test_session_stores_joined_stacks(self, orch, db, seed_questions):
+        """会话的 tech_stack 记录多选结果（逗号拼接），供展示与数据迁移去重键使用。"""
+        seed_questions(2, stack="python")
+        seed_questions(2, stack="agent")
+        created = await orch.run(
+            "create_session", db=db, mode="memorize", count=2, tech_stacks=["python", "agent"]
+        )
+        session = db.get(Session, created["session_id"])
+        assert session.tech_stack == "python,agent"
+
+    async def test_multi_stack_with_mixed_means_unfiltered(self, orch, db, seed_questions):
+        """多选中含 mixed：等同不限栈（mixed 被丢弃）。"""
+        seed_questions(2, stack="python")
+        seed_questions(2, stack="java")
+        created = await orch.run(
+            "create_session", db=db, mode="memorize", count=4, tech_stacks=["python", "mixed"]
+        )
+        assert len(created["questions"]) == 4
+
+    async def test_legacy_single_stack_still_works(self, orch, db, seed_questions):
+        """旧单值入参 tech_stack 兼容：只抽该栈的题。"""
+        seed_questions(2, stack="python")
+        seed_questions(2, stack="java")
+        created = await orch.run("create_session", db=db, mode="memorize", count=5, tech_stack="python")
+        assert len(created["questions"]) == 2
+        assert {q["tech_stack"] for q in created["questions"]} == {"python"}
+
+    async def test_interview_multi_stack(self, orch, db, seed_questions, fake_llm):
+        """面试模拟同样支持多选技术栈。"""
+        seed_questions(4, stack="python")
+        seed_questions(4, stack="agent")
+        seed_questions(2, stack="java")
+        created = await orch.run(
+            "create_session", db=db, mode="interview", count=3, tech_stacks=["python", "agent"]
+        )
+        assert created["question_count"] == 3
+        session = db.get(Session, created["session_id"])
+        stacks = set(session.tech_stack.split(","))
+        assert stacks == {"python", "agent"}
+
+    async def test_multi_stack_no_match_raises(self, orch, db, seed_questions):
+        """所选栈下无题：报错且不留孤儿会话。"""
+        seed_questions(2, stack="python")
+        with pytest.raises(StateError, match="题库为空"):
+            await orch.run("create_session", db=db, mode="memorize", count=3, tech_stacks=["go"])
+        assert db.exec(select(Session)).all() == []

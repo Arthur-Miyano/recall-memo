@@ -31,6 +31,27 @@ def _as_utc(dt: datetime) -> datetime:
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
 
 
+def normalize_stacks(
+    tech_stack: Optional[str] = None,
+    tech_stacks: Optional[list[str]] = None,
+) -> list[str]:
+    """统一技术栈过滤入参：兼容旧的单值 tech_stack 与新的多选 tech_stacks。
+
+    返回去重后的有效栈列表；None / 空 / 只含 "mixed"（混合，不限栈）时返回空列表。
+    """
+    stacks = [s for s in (tech_stacks or []) if s]
+    if not stacks and tech_stack:
+        stacks = [tech_stack]
+    # "mixed"（混合，不限栈）优先：只要选了混合就不过滤
+    if "mixed" in stacks:
+        return []
+    # 去重并保持顺序
+    seen: dict[str, None] = {}
+    for s in stacks:
+        seen.setdefault(s)
+    return list(seen)
+
+
 class StrategyAgent(BaseAgent):
     """策略 Agent：基于历史表现抽题，维护追问链与排除规则。"""
 
@@ -41,9 +62,10 @@ class StrategyAgent(BaseAgent):
         db: DBSession,
         tech_stack: Optional[str] = None,
         count: int = 3,
+        tech_stacks: Optional[list[str]] = None,
     ) -> list[Question]:
         """主入口：记忆训练抽题（面试/回忆走各自的专用方法）。"""
-        return self.select_questions(db, tech_stack=tech_stack, count=count)
+        return self.select_questions(db, tech_stack=tech_stack, count=count, tech_stacks=tech_stacks)
 
     # ------------------------------------------------------------------
     # 历史数据汇总
@@ -66,15 +88,18 @@ class StrategyAgent(BaseAgent):
         db: DBSession,
         tech_stack: Optional[str] = None,
         count: int = 3,
+        tech_stacks: Optional[list[str]] = None,
     ) -> list[Question]:
         """智能抽题：待补答队列优先，其次新题，再次历史表现差的题。
 
-        tech_stack 为 None / 空串 / "mixed" 时不限技术栈。
+        tech_stacks 多选过滤（如 ["python", "agent"] 同时背两种题）；
+        tech_stack 为旧单值入参，二者经 normalize_stacks 统一；空 / "mixed" 时不限技术栈。
         题量不足时返回全部可用题（MVP 允许）。
         """
         stmt = select(Question)
-        if tech_stack and tech_stack != "mixed":
-            stmt = stmt.where(Question.tech_stack == tech_stack)
+        stacks = normalize_stacks(tech_stack, tech_stacks)
+        if stacks:
+            stmt = stmt.where(Question.tech_stack.in_(stacks))
         questions = list(db.exec(stmt).all())
         if not questions:
             return []
@@ -138,17 +163,19 @@ class StrategyAgent(BaseAgent):
         db: DBSession,
         tech_stack: Optional[str] = None,
         count: int = 4,
+        tech_stacks: Optional[list[str]] = None,
     ) -> tuple[list[Question], dict[int, tuple[int, int]]]:
         """面试混合结构抽题：返回 (出题顺序列表, 追问标识 {question_id: (序号, 链长)})。
 
-        - 候选题按技术栈过滤后，先应用排除规则；
+        - 候选题按技术栈过滤（支持 tech_stacks 多选，语义同 select_questions），先应用排除规则；
         - 尽量安排 1 个追问组（组内题均未被排除且长度不超题量），按预设递进顺序连续出题；
         - 剩余名额用独立单题补齐：新题优先，其次低分/低成功率/久未出现的题；
         - 追问链块插入到独立题序列的随机位置；允许重复（记录照常写库）。
         """
         stmt = select(Question)
-        if tech_stack and tech_stack != "mixed":
-            stmt = stmt.where(Question.tech_stack == tech_stack)
+        stacks = normalize_stacks(tech_stack, tech_stacks)
+        if stacks:
+            stmt = stmt.where(Question.tech_stack.in_(stacks))
         all_questions = list(db.exec(stmt).all())
         if not all_questions:
             return [], {}

@@ -26,6 +26,18 @@ function optionValue(o) {
   return (o && typeof o === 'object') ? o.value : o
 }
 
+// 找回上次选的技术栈下标集合（多选）；savedValues 为新数组或旧单值字符串；都找不到回退默认下标
+export function resolveStackIndices(options, savedValues, fallback) {
+  const vals = Array.isArray(savedValues) ? savedValues : (savedValues ? [savedValues] : [])
+  const set = new Set()
+  for (const v of vals) {
+    const i = options.findIndex(o => optionValue(o) === v)
+    if (i >= 0) set.add(i)
+  }
+  if (set.size === 0) set.add(fallback)
+  return set
+}
+
 // 找回上次选的技术栈下标；找不到（比如栈被删了）回退默认下标
 export function resolveStackIndex(options, savedValue, fallback) {
   const i = options.findIndex(o => optionValue(o) === savedValue)

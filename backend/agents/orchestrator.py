@@ -33,7 +33,7 @@ from .assistant import AssistantAgent
 from .base import BaseAgent
 from .grader import GraderAgent
 from .interviewer import InterviewerAgent
-from .strategy import StrategyAgent
+from .strategy import StrategyAgent, normalize_stacks
 
 
 class OrchestratorAgent(BaseAgent):
@@ -77,19 +77,21 @@ class OrchestratorAgent(BaseAgent):
         mode: str = "memorize",
         tech_stack: Optional[str] = None,
         count: int = 3,
+        tech_stacks: Optional[list[str]] = None,
     ) -> dict[str, Any]:
-        """开始会话：按模式抽题并进入对应初始状态。"""
+        """开始会话：按模式抽题并进入对应初始状态。tech_stacks 为多选技术栈（空/mixed 不限）。"""
         self.workflow.validate_create(mode, count)
 
-        session = Session(mode=mode, tech_stack=tech_stack or "mixed")
+        stacks = normalize_stacks(tech_stack, tech_stacks)
+        session = Session(mode=mode, tech_stack=",".join(stacks) if stacks else "mixed")
         db.add(session)
         db.commit()
         db.refresh(session)
 
         try:
             if mode == "interview":
-                return await self._create_interview(db, session, tech_stack, count)
-            return await self._create_show(db, session, tech_stack, count)
+                return await self._create_interview(db, session, stacks, count)
+            return await self._create_show(db, session, stacks, count)
         except StateError:
             # 抽题失败（空题库/无历史记录等）：删除已建的会话行，避免留下孤儿会话
             db.delete(session)
@@ -97,7 +99,7 @@ class OrchestratorAgent(BaseAgent):
             raise
 
     async def _create_show(
-        self, db: DBSession, session: Session, tech_stack: Optional[str], count: int
+        self, db: DBSession, session: Session, tech_stacks: list[str], count: int
     ) -> dict[str, Any]:
         """记忆训练 / 回忆模式公共入口：抽题 → 进入 *_SHOW，返回题干+答案供记忆。"""
         mode = session.mode
@@ -110,7 +112,7 @@ class OrchestratorAgent(BaseAgent):
             if not questions:
                 raise StateError("暂无历史记录，请先完成记忆训练")
         else:
-            questions = await self.strategy.run(db, tech_stack=tech_stack, count=count)
+            questions = await self.strategy.run(db, tech_stacks=tech_stacks, count=count)
             if not questions:
                 raise StateError("题库为空或该技术栈下没有题目，请先导入题库")
 
@@ -133,12 +135,12 @@ class OrchestratorAgent(BaseAgent):
         }
 
     async def _create_interview(
-        self, db: DBSession, session: Session, tech_stack: Optional[str], count: int
+        self, db: DBSession, session: Session, tech_stacks: list[str], count: int
     ) -> dict[str, Any]:
         """面试模拟入口：混合结构抽题（追问链 + 独立单题）→ 直接出第一题。"""
         self.workflow.transition(db, session, SessionState.INTERVIEW_SELECT, self.strategy.name)
         events.publish(self.strategy.name, "抽题中…")
-        plan, followup = self.strategy.select_interview_plan(db, tech_stack=tech_stack, count=count)
+        plan, followup = self.strategy.select_interview_plan(db, tech_stacks=tech_stacks, count=count)
         if not plan:
             raise StateError("题库为空或该技术栈下没有题目，请先导入题库")
 

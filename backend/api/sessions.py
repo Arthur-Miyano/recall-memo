@@ -17,7 +17,8 @@ router = APIRouter(prefix="/sessions", tags=["sessions"])
 
 class CreateSessionRequest(BaseModel):
     mode: str = "memorize"  # memorize（记忆训练）/ interview（面试模拟）/ review（回忆）
-    stack: Optional[str] = None  # 技术栈筛选：python / agent / vue3 / mixed
+    stack: Optional[str] = None  # 旧单值入参：技术栈筛选，如 python；与 stacks 二选一
+    stacks: Optional[list[str]] = None  # 多选技术栈（如 ["python", "agent"]）；空 / ["mixed"] 不限栈
     count: int = Field(default=3, ge=1, le=20)  # 各模式题量上限在总控按模式校验
 
 
@@ -50,7 +51,7 @@ async def create_session(req: CreateSessionRequest, db: DBSession = Depends(get_
     """开始会话：按模式抽题。记忆/回忆模式返回题目列表（含答案）；面试模式直接返回第一题。"""
     try:
         return await orchestrator.run(
-            "create_session", db=db, mode=req.mode, tech_stack=req.stack, count=req.count
+            "create_session", db=db, mode=req.mode, tech_stack=req.stack, tech_stacks=req.stacks, count=req.count
         )
     except StateError as exc:
         raise _handle_state_error(exc) from exc

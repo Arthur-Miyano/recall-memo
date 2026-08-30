@@ -11,7 +11,7 @@ import { useRouter } from 'vue-router'
 import { homeSummary as mockHome } from '../mock/home'
 import { getHomeSummary } from '../api'
 import { useSessionStore } from '../stores/session'
-import { loadHomePrefs, saveHomePref, resolveStackIndex, resolveCount } from '../utils/homePrefs'
+import { loadHomePrefs, saveHomePref, resolveStackIndices, resolveCount } from '../utils/homePrefs'
 
 const router = useRouter()
 const sessionStore = useSessionStore()
@@ -21,26 +21,36 @@ const data = ref(mockHome)
 
 // openIdx：当前展开的抽屉下标；null 表示全部收起
 const openIdx = ref(0)
-// 每个抽屉内各可选项组的单选状态：[抽屉][组] = 选中下标
+// 每个抽屉内各可选项组的单选状态：[抽屉][组] = 选中下标（题量等非技术栈组用）
 const optSel = ref(mockHome.drawers.map(d => d.optGroups.map(g => g.on)))
+// 技术栈组（seal）多选状态：[抽屉] = Set(选中下标)，默认选中「混合」
+const stackSel = ref([])
+function initStackSel() {
+  stackSel.value = data.value.drawers.map(d => {
+    const g = d.optGroups.find(gr => gr.seal)
+    return new Set(g ? [g.on] : [])
+  })
+}
+initStackSel()
 
 onMounted(async () => {
   try {
     data.value = await getHomeSummary()
     optSel.value = data.value.drawers.map(d => d.optGroups.map(g => g.on))
+    initStackSel()
     applySavedPrefs()
   } catch (e) {
     console.warn('[home] 后端不可用，回退 mock 数据：', e.message)
   }
 })
 
-// 选择记忆：上一次点开始时存的技术栈/题量（localStorage），进来时覆盖默认值
+// 选择记忆：上一次点开始时存的技术栈(多选)/题量（localStorage），进来时覆盖默认值
 function applySavedPrefs() {
   const prefs = loadHomePrefs()
   const groups = data.value.drawers
   if (prefs.memorize && groups[0]) {
     const g = groups[0].optGroups
-    optSel.value[0][0] = resolveStackIndex(g[0].options, prefs.memorize.stack, optSel.value[0][0])
+    stackSel.value[0] = resolveStackIndices(g[0].options, prefs.memorize.stacks ?? prefs.memorize.stack, g[0].on)
     const c = resolveCount(prefs.memorize.count, MEMORIZE_COUNTS, optSel.value[0][1])
     if (c.custom !== undefined) {
       customCount.value = String(c.custom)
@@ -51,7 +61,7 @@ function applySavedPrefs() {
   }
   if (prefs.interview && groups[1]) {
     const g = groups[1].optGroups
-    optSel.value[1][0] = resolveStackIndex(g[0].options, prefs.interview.stack, optSel.value[1][0])
+    stackSel.value[1] = resolveStackIndices(g[0].options, prefs.interview.stacks ?? prefs.interview.stack, g[0].on)
     optSel.value[1][1] = resolveCount(prefs.interview.count, INTERVIEW_COUNTS, optSel.value[1][1]).index
   }
 }
@@ -71,8 +81,23 @@ function optValue(g, oi) {
   const o = g.options[oi]
   return (o && typeof o === 'object') ? o.value : o
 }
-// 可选项胶囊：组内单选；点记忆训练题量胶囊时清空自由输入
+// 可选项胶囊：技术栈组（seal）多选切换，其余组单选；点记忆训练题量胶囊时清空自由输入
 function pickOpt(di, gi, oi) {
+  const g = data.value.drawers[di].optGroups[gi]
+  if (g.seal) {
+    // 多选规则：「混合」独占（=不限栈）；选具体栈自动取消混合；全取消时回落到混合
+    const mixedIdx = g.options.findIndex(o => optValue(g, g.options.indexOf(o)) === 'mixed')
+    if (oi === mixedIdx) {
+      stackSel.value[di] = new Set([mixedIdx])
+      return
+    }
+    const sel = new Set(stackSel.value[di])
+    sel.delete(mixedIdx)
+    if (sel.has(oi)) sel.delete(oi); else sel.add(oi)
+    if (sel.size === 0) sel.add(mixedIdx)
+    stackSel.value[di] = sel
+    return
+  }
   optSel.value[di][gi] = oi
   if (di === 0 && gi === 1) customCount.value = ''
 }
@@ -84,26 +109,29 @@ function memorizeCount() {
   if (!Number.isNaN(n)) return Math.min(20, Math.max(1, n))
   return MEMORIZE_COUNTS[optSel.value[0][1]] ?? 3
 }
+// 当前抽屉选中的技术栈 value 数组（多选）
+function selectedStacks(di) {
+  const g = data.value.drawers[di].optGroups[0]
+  return [...stackSel.value[di]].map(i => optValue(g, i))
+}
 function go(di) {
   if (di === 0) {
-    // NO.01 记忆训练：组 0 = 技术栈（取选中项 value），组 1 = 题量（胶囊或自由输入）
+    // NO.01 记忆训练：组 0 = 技术栈（多选，取选中项 value 数组），组 1 = 题量（胶囊或自由输入）
     // fresh 时间戳：每次点击「开始记忆」都开新一轮抽题；切页返回（无新 fresh）则恢复原题
-    const groups = data.value.drawers[0].optGroups
-    const stack = optValue(groups[0], optSel.value[0][0])
+    const stacks = selectedStacks(0)
     const count = memorizeCount()
-    saveHomePref('memorize', { stack, count })
+    saveHomePref('memorize', { stacks, count })
     router.push({
       path: '/memorize',
-      query: { stack, count, fresh: String(Date.now()) },
+      query: { stacks: stacks.join(','), count, fresh: String(Date.now()) },
     })
   } else if (di === 1) {
-    const groups = data.value.drawers[1].optGroups
-    const stack = optValue(groups[0], optSel.value[1][0])
+    const stacks = selectedStacks(1)
     const count = INTERVIEW_COUNTS[optSel.value[1][1]]
-    saveHomePref('interview', { stack, count })
+    saveHomePref('interview', { stacks, count })
     router.push({
       path: '/interview',
-      query: { stack, count },
+      query: { stacks: stacks.join(','), count },
     })
   } else {
     router.push({ path: '/memorize', query: { mode: 'review', fresh: String(Date.now()) } })
@@ -162,7 +190,7 @@ function resumeMemorize() {
                 v-for="(o, oi) in g.options"
                 :key="optValue(g, oi)"
                 class="opt"
-                :class="[g.seal && 'opt--seal', { on: optSel[di][gi] === oi }]"
+                :class="[g.seal && 'opt--seal', { on: g.seal ? stackSel[di]?.has(oi) : optSel[di][gi] === oi }]"
                 @click.stop="pickOpt(di, gi, oi)"
               >{{ (o && typeof o === 'object') ? o.label : o }}</button>
               <!-- 记忆训练题量：胶囊之外的自由输入（1~20 题） -->

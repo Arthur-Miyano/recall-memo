@@ -10,6 +10,7 @@ import {
   newIdempotencyKey, offline, createRequestScope,
 } from '../api'
 import { decideRestore, draftStillValid, shouldResyncMemorize } from '../utils/sessionRecovery'
+import { parseStacksQuery, stackLabel } from '../utils/stacks'
 import { canSubmit, OFFLINE_WRITE_TIP } from '../utils/offlineGuard'
 import { useSessionStore } from '../stores/session'
 
@@ -106,9 +107,9 @@ export function useMemorizeSession() {
   }
 
   // 应用服务端返回的题目列表到展示阶段（创建会话专用）
-  function applyQuestions(d, mode, stack) {
+  function applyQuestions(d, mode, stacks) {
     sessionId.value = d.session_id
-    topLeft.value = `${mode === 'review' ? 'RECALL' : 'MEMORIZE'} — ${(d.questions[0]?.tech_stack || stack || 'mixed').toUpperCase()} · 本轮 ${d.questions.length} 题`
+    topLeft.value = `${mode === 'review' ? 'RECALL' : 'MEMORIZE'} — ${stackLabel(stacks, d.questions[0]?.tech_stack)} · 本轮 ${d.questions.length} 题`
     topRight.value = `${d.state} — ${mode === 'review' ? '回忆中' : '记忆中'}`
     questions.value = d.questions.map((q, i) => {
       kwMap[q.question_id] = q.keywords || []
@@ -164,7 +165,7 @@ export function useMemorizeSession() {
   async function initSession() {
     const mode = route.query.mode === 'review' ? 'review' : 'memorize'
     const count = Number(route.query.count) || 3
-    const stack = typeof route.query.stack === 'string' ? route.query.stack : null
+    const stacks = parseStacksQuery(route.query)
     const fresh = typeof route.query.fresh === 'string' ? route.query.fresh : null
     // 有快照且本次不是「新的开始」（无 fresh 或 fresh 与快照一致）→ 走恢复决策
     const snap = sessionStore.memorize
@@ -207,8 +208,8 @@ export function useMemorizeSession() {
     useMock.value = false
     loadError.value = ''
     try {
-      const d = await createSession(mode, stack, count, { signal: scope.signal })
-      applyQuestions(d, mode, stack)
+      const d = await createSession(mode, stacks, count, { signal: scope.signal })
+      applyQuestions(d, mode, stacks)
     } catch (e) {
       if (scope.signal.aborted) return
       if (e.isNetwork) {
