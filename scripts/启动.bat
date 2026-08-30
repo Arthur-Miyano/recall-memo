@@ -25,13 +25,41 @@ if not exist backend\.venv\Scripts\python.exe (
     popd
 )
 
+REM ---- Reuse a healthy instance if one is already running (no duplicates) ----
+set "PORT="
+for /l %%p in (8000,1,8019) do (
+    if not defined PORT (
+        curl -s -m 1 "http://127.0.0.1:%%p/api/health" 2>nul | findstr /c:"local_token" >nul && set "PORT=%%p"
+    )
+)
+if defined PORT (
+    echo [Recall] Already running on port %PORT%, opening it.
+    start "" http://127.0.0.1:%PORT%
+    exit /b 0
+)
+
+REM ---- Pick a free port (prefer 8000, shift if occupied by other projects) ----
+for /f %%p in ('backend\.venv\Scripts\python.exe scripts\find_free_port.py') do set "PORT=%%p"
+if not defined PORT (
+    echo [Recall] No free port in 8000-8019, please close other local services and retry.
+    exit /b 1
+)
+echo [Recall] Using port %PORT%
+
 REM ---- Start server without a persistent console window ----
+REM Per-port log file: a stale instance holding the old backend.log can no longer block startup
 if not exist logs mkdir logs
-> logs\backend.log echo [Recall] Backend started at %date% %time%
 pushd backend
-start "" /b cmd /c ".venv\Scripts\python.exe -m uvicorn main:app --host 127.0.0.1 --port 8000 --workers 1 --no-access-log >> ..\logs\backend.log 2>&1"
+start "" /b cmd /c ".venv\Scripts\python.exe -m uvicorn main:app --host 127.0.0.1 --port %PORT% --workers 1 --no-access-log >> ..\logs\backend-%PORT%.log 2>&1"
 popd
 
-REM ---- Open browser after the server is up ----
-timeout /t 3 /nobreak >nul
-start "" http://127.0.0.1:8000
+REM ---- Open browser only after THIS server responds (avoids opening another project's page) ----
+REM ping-sleep instead of timeout: works even when GNU timeout shadows Windows timeout on PATH
+set "READY="
+for /l %%i in (1,1,40) do (
+    if not defined READY (
+        curl -s -m 1 "http://127.0.0.1:%PORT%/api/health" 2>nul | findstr /c:"local_token" >nul && set "READY=1"
+        if not defined READY ping 127.0.0.1 -n 2 >nul
+    )
+)
+start "" http://127.0.0.1:%PORT%
