@@ -136,6 +136,15 @@ async function exportCard() {
           <button class="btn" :disabled="!canWrite" @click="startQuiz">我记好了，开始考核 →</button>
           <span class="iv-note">// 考核时将打乱顺序，只显示变体题干；点击题目卡片可放大逐题观看</span>
         </div>
+        <!-- 出题加载卡：点击后立即可见（顶栏的 busy 提示在视野外时也有反馈） -->
+        <div v-if="busy === '面试官 AGENT 出题中…'" class="paper mem-q mem-loading">
+          <div class="paper-head">
+            <span class="no">AGENT</span>
+            <h3>面试官正在出题中…</h3>
+          </div>
+          <p class="comment">正在结合本轮题目生成考核问法，通常需要几秒钟，请稍候。</p>
+          <div class="loadbar"><i></i></div>
+        </div>
         </template>
       </div>
 
