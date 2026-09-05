@@ -21,5 +21,20 @@ REM ---- Dev mode: backend + Vite dev server in separate windows ----
 start "Recall backend" /min /d "%~dp0..\backend" cmd /k ".venv\Scripts\python.exe -m uvicorn main:app --host 127.0.0.1 --port 8000 --workers 1"
 start "Recall frontend" /min /d "%~dp0..\frontend" cmd /k "npm run dev"
 
-timeout /t 5 /nobreak >nul
-start "" http://localhost:5173
+set "READY="
+for /l %%i in (1,1,20) do (
+    if not defined READY (
+        curl -s -m 1 http://127.0.0.1:5173/ >nul 2>nul && set "READY=1"
+        if not defined READY ping 127.0.0.1 -n 2 >nul
+    )
+)
+if not defined READY (
+    echo [Recall] Dev frontend did not become ready. Check the Recall frontend window.
+    pause
+    exit /b 1
+)
+if defined RECALL_NO_BROWSER (
+    echo [Recall] Browser suppressed for launcher check: http://localhost:5173
+) else (
+    start "" /b explorer.exe "http://localhost:5173"
+)
