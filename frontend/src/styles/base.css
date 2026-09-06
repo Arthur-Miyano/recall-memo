@@ -548,11 +548,31 @@ body::before {
 .answer-cols.with-tree .mt-col { flex:none; width:38%; }
 .answer-cols.with-tree .answer { flex:1; min-width:0; border-left:1px solid var(--ink-25); padding-left:18px; }
 .mem-actions { display:flex; gap:14px; align-items:center; margin-top:26px; }
-/* 出题加载卡：与背板同风格，下方不定进度条来回滑动 */
-.mem-loading .comment { font-size:14px; line-height:2; margin:12px 0 0; }
-.mem-loading .loadbar { height:6px; margin-top:14px; background: var(--ink-12); overflow:hidden; }
-.mem-loading .loadbar i { display:block; height:100%; width:28%; background: var(--ink); animation: loadslide 1.1s ease-in-out infinite; }
-@keyframes loadslide { 0% { transform:translateX(-110%); } 100% { transform:translateX(400%); } }
+/* 出题加载：半透明黑罩整页 + 居中卡片 + 像素充能进度条 */
+.mem-load-overlay {
+  position:fixed; inset:0; z-index:95; background: rgba(20,18,16,.48);
+  display:flex; align-items:center; justify-content:center;
+  animation: screenIn .25s var(--ease-out) both;
+}
+.mem-load-card { width:min(460px, 86vw); margin-bottom:0; }
+.mem-load-card .comment { font-size:14px; line-height:2; margin:12px 0 0; }
+/* 说明文字末尾的闪烁方块光标，像终端在等待输入 */
+.mem-load-card .comment::after {
+  content:""; display:inline-block; width:8px; height:12px; margin-left:5px;
+  vertical-align:-1px; background: var(--ink); animation: blink 1.2s steps(2) infinite;
+}
+/* 像素充能条：2px 墨框 + 小方块逐格点亮（steps 让位移呈离散跳变） */
+.pixelbar { height:16px; margin-top:16px; padding:2px; border:2px solid var(--ink); background: var(--paper-hi); }
+.pixelbar i {
+  display:block; height:100%;
+  background: repeating-linear-gradient(90deg, var(--ink) 0 7px, transparent 7px 11px);
+  animation: pixcharge 1.8s steps(18) infinite;
+}
+@keyframes pixcharge {
+  0% { clip-path: inset(0 100% 0 0); }
+  70% { clip-path: inset(0 0 0 0); }
+  100% { clip-path: inset(0 0 0 0); }
+}
 /* 考核态 */
 .quiz-zone { display:none; }
 .mem-stage.quizzing .mem-show { display:none; }
