@@ -5,6 +5,7 @@ __pycache__/
 node_modules/
 dist/
 *.db
+!data/ecdict.db
 *.db-shm
 *.db-wal
 *.db.bak*

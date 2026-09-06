@@ -20,6 +20,8 @@ import { exportRecallCard } from '../utils/recallCard'
 import { useMemorizeSession } from '../composables/useMemorizeSession'
 import NoteSaver from '../components/NoteSaver.vue'
 import MemoryTree from '../components/MemoryTree.vue'
+import WordText from '../components/WordText.vue'
+import WordCard from '../components/WordCard.vue'
 
 const router = useRouter()
 
@@ -129,7 +131,7 @@ async function exportCard() {
           <!-- 有记忆树时双栏（左树右原文），无树保持单栏 -->
           <div class="answer-cols" :class="{ 'with-tree': q.memoryTree }">
             <div class="mt-col" v-if="q.memoryTree"><span class="lbl">记忆树</span><MemoryTree :node="q.memoryTree" /></div>
-            <div class="answer" @contextmenu="onNoteSelect($event, q.title)"><span class="lbl">标准答案</span>{{ q.answer }}</div>
+            <div class="answer" @contextmenu="onNoteSelect($event, q.title)"><span class="lbl">标准答案</span><WordText :text="q.answer" /></div>
           </div>
         </div>
         <div class="mem-actions">
@@ -176,7 +178,7 @@ async function exportCard() {
           </p>
           <div class="compare">
             <div><span class="lbl">你的回答</span>{{ feedback.yourAnswer }}</div>
-            <div @contextmenu="onNoteSelect($event, quiz.question)"><span class="lbl">标准答案</span>{{ feedback.stdAnswer }}</div>
+            <div @contextmenu="onNoteSelect($event, quiz.question)"><span class="lbl">标准答案</span><WordText :text="feedback.stdAnswer" /></div>
           </div>
           <!-- 本轮总结（全部答完后） -->
           <div v-if="finished && summary" style="margin-top:14px">
@@ -213,6 +215,8 @@ async function exportCard() {
 
     <!-- 划句右键存笔记：浮动菜单（标准答案区域选中文字后右键触发） -->
     <NoteSaver ref="noteSaver" />
+    <!-- 点击英文单词弹出的词典卡片（音标 + 释义 + 朗读） -->
+    <WordCard />
 
     <!-- 单题放大 modal：宋体大题干 + 完整标准答案 + 上/下题导航（Esc / 点遮罩关闭，←/→ 翻题） -->
     <div class="pm-overlay" v-if="zoomIdx !== null && questions[zoomIdx]" @click.self="closeZoom">
@@ -226,7 +230,7 @@ async function exportCard() {
           <div class="pm-q">{{ questions[zoomIdx].title }}</div>
           <div class="pm-answer-cols" :class="{ 'with-tree': questions[zoomIdx].memoryTree }">
             <div class="mt-col" v-if="questions[zoomIdx].memoryTree"><span class="lbl">记忆树</span><MemoryTree :node="questions[zoomIdx].memoryTree" /></div>
-            <div class="pm-answer" @contextmenu="onNoteSelect($event, questions[zoomIdx].title)"><span class="lbl">标准答案</span>{{ questions[zoomIdx].answer }}</div>
+            <div class="pm-answer" @contextmenu="onNoteSelect($event, questions[zoomIdx].title)"><span class="lbl">标准答案</span><WordText :text="questions[zoomIdx].answer" /></div>
           </div>
         </div>
         <div class="pm-nav">

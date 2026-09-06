@@ -273,7 +273,7 @@ body::before {
 }
 /* 对照栏 */
 .compare { display:grid; grid-template-columns: 1fr 1fr; gap:0; border:1px solid var(--ink-25); }
-.compare > div { padding:16px 18px; font-size:14px; line-height:1.85; }
+.compare > div { padding:16px 18px; font-size:14px; line-height:1.85; white-space:pre-line; }
 .compare > div:first-child { border-right:1px dashed var(--ink-25); }
 .compare .lbl {
   font-family: var(--mono); font-size:10px; letter-spacing:.14em;
@@ -540,7 +540,7 @@ body::before {
 .mem-q.mem-click { cursor:pointer; transition: box-shadow .2s, transform .2s; }
 .mem-q.mem-click:hover { box-shadow:5px 6px 0 rgba(25,25,25,.18); transform:translate(-1px,-1px); }
 .mem-q.mem-click .paper-head { cursor:pointer; }
-.mem-q .answer { font-size:14.5px; line-height:2; color: var(--ink); }
+.mem-q .answer { font-size:14.5px; line-height:2; color: var(--ink); white-space:pre-line; }
 .mem-q .answer .lbl { font-family: var(--mono); font-size:10px; letter-spacing:.14em; color: var(--ink-45); display:block; margin-bottom:6px; }
 /* 记忆树双栏（有 memory_tree 时）：左树右原文，中间 1px 分隔线；无树保持单栏。组件见 components/MemoryTree.vue */
 .mt-col .lbl { font-family: var(--mono); font-size:10px; letter-spacing:.14em; color: var(--ink-45); display:block; margin-bottom:6px; }
@@ -685,3 +685,31 @@ body::before {
 .pm-nav button:hover:not(:disabled) { border-color: var(--ink); color: var(--ink); }
 .pm-nav button:disabled { opacity:.35; cursor:default; }
 .pm-nav .idx { font-family: var(--mono); font-size:10px; letter-spacing:.14em; color: var(--ink-45); }
+
+/* ===== 单词卡片（点击答案里的英文单词弹出，见 components/WordText.vue / WordCard.vue） ===== */
+/* 可点单词：淡虚线下划线提示，hover 上墨底 */
+.w {
+  border-bottom:1px dashed var(--ink-45); cursor:pointer;
+  transition: background .12s, border-color .12s;
+}
+.w:hover { background: var(--ink-12); border-bottom-color: var(--ink); }
+/* 弹卡本体：背板同风格（纸面 + 1px 墨边 + 错位投影），浮在所有弹层之上 */
+.word-card {
+  position:fixed; z-index:96; width:min(340px,86vw);
+  background: var(--paper-hi); border:1px solid var(--ink);
+  box-shadow: 5px 6px 0 rgba(25,25,25,.18);
+  padding:14px 18px 16px; animation: screenIn .18s var(--ease-out);
+}
+.wc-head { display:flex; align-items:baseline; gap:10px; border-bottom:1px solid var(--ink); padding-bottom:8px; margin-bottom:8px; }
+.wc-head h4 { font-family: var(--serif); font-weight:600; font-size:19px; flex:1; word-break:break-all; }
+.wc-say, .wc-close {
+  font-family: var(--mono); font-size:13px; line-height:1; flex:none;
+  background:none; border:1px solid var(--ink-45); color: var(--ink-70);
+  width:28px; height:28px; cursor:pointer;
+  transition: background .15s, color .15s, border-color .15s;
+}
+.wc-say:hover, .wc-close:hover { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.wc-pho { font-family: var(--mono); font-size:12px; color: var(--ink-70); margin-bottom:8px; }
+.wc-body { font-size:13.5px; line-height:1.9; color: var(--ink); white-space:pre-line; max-height:40vh; overflow-y:auto; }
+.wc-lemma { font-family: var(--mono); font-size:11px; letter-spacing:.06em; color: var(--ink-45); margin-bottom:6px; }
+.wc-dim { color: var(--ink-45); font-family: var(--mono); font-size:12px; letter-spacing:.04em; }
